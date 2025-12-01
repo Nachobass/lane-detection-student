@@ -16,12 +16,13 @@ DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
 class LaneNet(nn.Module):
-    def __init__(self, in_ch = 3, arch="ENet"):
+    def __init__(self, in_ch = 3, arch="ENet", freeze_encoder=False):
         super(LaneNet, self).__init__()
         # no of instances for segmentation
         self.no_of_instances = 3  # if you want to output RGB instance map, it should be 3.
         print("Use {} as backbone".format(arch))
         self._arch = arch
+        self.freeze_encoder = freeze_encoder
         if self._arch == 'UNet':
             self._encoder = UNet_Encoder(in_ch)
             self._encoder.to(DEVICE)
@@ -51,6 +52,24 @@ class LaneNet(nn.Module):
 
         self.relu = nn.ReLU().to(DEVICE)
         self.sigmoid = nn.Sigmoid().to(DEVICE)
+        
+        # Freeze encoder if requested
+        if self.freeze_encoder:
+            self.freeze_backbone()
+    
+    def freeze_backbone(self):
+        """Freeze the encoder backbone parameters to prevent training"""
+        if hasattr(self, '_encoder'):
+            for param in self._encoder.parameters():
+                param.requires_grad = False
+            print("Encoder backbone frozen - parameters will not be updated during training")
+    
+    def unfreeze_backbone(self):
+        """Unfreeze the encoder backbone parameters"""
+        if hasattr(self, '_encoder'):
+            for param in self._encoder.parameters():
+                param.requires_grad = True
+            print("Encoder backbone unfrozen - parameters can be updated during training")
 
     def forward(self, input_tensor):
         if self._arch == 'UNet':
