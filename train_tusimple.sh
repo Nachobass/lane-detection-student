@@ -3,7 +3,7 @@
 # Script para procesar y entrenar con dataset TUSimple
 # Uso: ./train_tusimple.sh
 
-set -e  # Salir si hay errores
+# No usar set -e porque queremos continuar aunque la evaluación falle
 
 # TUSIMPLE_DIR="./data/archive/TUSimple/train_set"
 TUSIMPLE_DIR="./data/archive_train/TUSimple/train_set"
@@ -52,6 +52,19 @@ echo "Paso 2: Iniciando entrenamiento"
 echo "========================================="
 echo ""
 
+# Verificar si existen pesos pre-entrenados
+PRETRAINED_WEIGHTS="./log/baseline_weights/best_model.pth"
+if [ -f "${PRETRAINED_WEIGHTS}" ]; then
+    echo "✓ Pesos pre-entrenados encontrados: ${PRETRAINED_WEIGHTS}"
+    echo "  El entrenamiento comenzará desde estos pesos"
+    PRETRAINED_ARG="--pretrained ${PRETRAINED_WEIGHTS}"
+else
+    echo "⚠ No se encontraron pesos pre-entrenados en ${PRETRAINED_WEIGHTS}"
+    echo "  El entrenamiento comenzará desde cero"
+    PRETRAINED_ARG=""
+fi
+echo ""
+
 # Comando de entrenamiento (SIN multitask porque TUSimple no tiene drivable area)
 python train.py \
     --dataset "${TRAINING_DIR}" \
@@ -62,12 +75,47 @@ python train.py \
     --epochs 25 \
     --bs 4 \
     --lr 0.0001 \
-    --save ./log/tusimple_lanenet_plus
+    --save ./log/tusimple_lanenet_plus \
+    ${PRETRAINED_ARG}
+
+TRAIN_EXIT_CODE=$?
+if [ $TRAIN_EXIT_CODE -ne 0 ]; then
+    echo "✗ Error durante el entrenamiento"
+    exit 1
+fi
 
 echo ""
 echo "========================================="
 echo "Entrenamiento completado!"
 echo "========================================="
 echo "Modelo guardado en: ./log/tusimple_lanenet_plus/best_model.pth"
+echo ""
+
+# Paso 3: Evaluar y calcular F1
+echo "========================================="
+echo "Paso 3: Evaluando modelo y calculando F1"
+echo "========================================="
+echo ""
+
+python eval_model.py \
+    --model ./log/tusimple_lanenet_plus/best_model.pth \
+    --dataset "${TRAINING_DIR}" \
+    --split val \
+    --use_lanenet_plus \
+    --use_attention \
+    --model_type ENet \
+    --save_csv ./log/tusimple_lanenet_plus/eval_results_val.csv
+
+if [ $? -eq 0 ]; then
+    echo ""
+    echo "========================================="
+    echo "Evaluación completada!"
+    echo "========================================="
+    echo "Resultados guardados en: ./log/tusimple_lanenet_plus/eval_results_val.csv"
+else
+    echo ""
+    echo "⚠ Error durante la evaluación (continúa el script)"
+fi
+
 echo ""
 

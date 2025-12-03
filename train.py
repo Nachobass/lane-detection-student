@@ -90,6 +90,28 @@ def train():
         model = LaneNet(arch=args.model_type)
     
     model.to(DEVICE)
+    
+    # Load pretrained weights if provided
+    if args.pretrained is not None and os.path.exists(args.pretrained):
+        print(f"Loading pretrained weights from: {args.pretrained}")
+        try:
+            pretrained_dict = torch.load(args.pretrained, map_location=DEVICE)
+            model_dict = model.state_dict()
+            
+            # Filter out incompatible keys (e.g., different architecture)
+            pretrained_dict = {k: v for k, v in pretrained_dict.items() 
+                             if k in model_dict and model_dict[k].shape == v.shape}
+            
+            # Load compatible weights
+            model_dict.update(pretrained_dict)
+            model.load_state_dict(model_dict)
+            print(f"Successfully loaded {len(pretrained_dict)} pretrained weights")
+        except Exception as e:
+            print(f"Warning: Could not load pretrained weights: {e}")
+            print("Continuing with random initialization...")
+    elif args.pretrained is not None:
+        print(f"Warning: Pretrained model path not found: {args.pretrained}")
+        print("Continuing with random initialization...")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     print(f"{args.epochs} epochs {len(train_dataset)} training samples\n")
