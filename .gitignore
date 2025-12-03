@@ -173,3 +173,7 @@ test_output/
 test_output_sequence/
 kalman_results/
 culane_results/
+
+# Project specific - test data directories
+data/test_culane/
+data/test_culane2/
