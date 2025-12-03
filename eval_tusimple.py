@@ -205,20 +205,27 @@ def evaluate_tusimple_test_set(test_json_path, dataset_base_dir, model_path,
     print(f"\nAverage IoU: {avg_iou:.4f}")
     print(f"Average F1 (Dice): {avg_dice:.4f}")
     
-    # Sort by worst accuracy (lowest IoU)
-    results_sorted = sorted(results, key=lambda x: x['iou'])
+    # # Sort by worst accuracy (lowest IoU)
+    # results_sorted = sorted(results, key=lambda x: x['iou'])
+
+    # Sort by best accuracy (highest IoU)
+    results_sorted = sorted(results, key=lambda x: x['iou'], reverse=True)
     
-    # Print worst N images
+    # # Print worst N images
+    # Print best N images
     print(f"\n{'='*80}")
-    print(f"WORST {save_worst_n} IMAGES (by IoU):")
+    print(f"BEST {save_worst_n} IMAGES (by IoU):")
+    # print(f"WORST {save_worst_n} IMAGES (by IoU):")
     print(f"{'='*80}")
     for i, result in enumerate(results_sorted[:save_worst_n]):
         print(f"{i+1}. {result['raw_file']}: IoU={result['iou']:.4f}, F1={result['dice']:.4f}")
     
-    # Save worst N images with visualizations
+    # # Save worst N images with visualizations
+    # Save best N images with visualizations
     os.makedirs(output_dir, exist_ok=True)
     
-    print(f"\nSaving worst {save_worst_n} images to {output_dir}/...")
+    # print(f"\nSaving worst {save_worst_n} images to {output_dir}/...")
+    print(f"\nSaving best {save_worst_n} images to {output_dir}/...")
     for i, result in enumerate(results_sorted[:save_worst_n]):
         # Create visualization: original + GT overlay + Pred overlay
         orig_img = result['original_img'].copy()
@@ -245,7 +252,8 @@ def evaluate_tusimple_test_set(test_json_path, dataset_base_dir, model_path,
         
         # Save
         filename = os.path.basename(result['raw_file']).replace('/', '_')
-        output_path = os.path.join(output_dir, f"worst_{i+1:03d}_{filename}")
+        # output_path = os.path.join(output_dir, f"worst_{i+1:03d}_{filename}")
+        output_path = os.path.join(output_dir, f"best_{i+1:03d}_{filename}")
         cv2.imwrite(output_path, combined)
         
         # Also save individual masks
@@ -270,7 +278,8 @@ def evaluate_tusimple_test_set(test_json_path, dataset_base_dir, model_path,
     
     print(f"\n{'='*80}")
     print(f"Results saved in: {output_dir}/")
-    print(f"Worst image: {results_sorted[0]['raw_file']} (IoU: {results_sorted[0]['iou']:.4f})")
+    # print(f"Worst image: {results_sorted[0]['raw_file']} (IoU: {results_sorted[0]['iou']:.4f})")
+    print(f"Best image: {results_sorted[0]['raw_file']} (IoU: {results_sorted[0]['iou']:.4f})")
     print(f"{'='*80}")
 
 
