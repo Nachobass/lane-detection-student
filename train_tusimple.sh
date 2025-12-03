@@ -5,7 +5,8 @@
 
 set -e  # Salir si hay errores
 
-TUSIMPLE_DIR="./data/archive/TUSimple/train_set"
+# TUSIMPLE_DIR="./data/archive/TUSimple/train_set"
+TUSIMPLE_DIR="./data/archive_train/TUSimple/train_set"
 TRAINING_DIR="${TUSIMPLE_DIR}/training"
 
 echo "========================================="
