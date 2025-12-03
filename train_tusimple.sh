@@ -59,7 +59,7 @@ python train.py \
     --use_attention \
     --use_rectification \
     --model_type ENet \
-    --epochs 5 \
+    --epochs 10 \
     --bs 4 \
     --lr 0.0001 \
     --save ./log/tusimple_lanenet_plus
