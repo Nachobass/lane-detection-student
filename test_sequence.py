@@ -320,7 +320,13 @@ def process_single_frame(model, kalman_fusion, img_path, data_transform,
     # Ensure reasonable bounds (1-4 lanes for highways)
     lanes_count = max(1, min(4, lanes_count)) if lanes_count > 0 else 0
     
-    # Add lane count info to fusion_info
+    # Add lane count info to fusion_info (always, with or without Kalman)
+    if 'weights' not in fusion_info:
+        # Default weights when Kalman is not used
+        fusion_info['weights'] = {'kalman': 0.0, 'enet': 1.0}
+    if 'frame' not in fusion_info:
+        # Default frame number when Kalman is not used
+        fusion_info['frame'] = frame_idx
     fusion_info['lanes_count'] = lanes_count
     fusion_info['yellow_lines_detected'] = yellow_lines_count
     fusion_info['line_positions'] = detected_line_positions  # Store line positions for drawing
