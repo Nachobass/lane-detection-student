@@ -8,7 +8,7 @@ from torch.nn.modules.loss import _Loss
 from torch.autograd import Variable
 import torch
 import torch.nn as nn
-from torch.functional import F
+import torch.nn.functional as F
 
 DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -116,5 +116,73 @@ class DiscriminativeLoss(_Loss):
         reg_loss = reg_loss / batch_size
 
         return var_loss, dist_loss, reg_loss
+
+
+class MultiTaskLoss(nn.Module):
+    """
+    Multi-Task Loss for LaneNetPlus
+    
+    Combines:
+    - Lane segmentation loss (BCEWithLogitsLoss)
+    - Drivable area segmentation loss (BCEWithLogitsLoss)
+    
+    Total loss = lane_loss + lambda * drivable_loss
+    """
+    
+    def __init__(self, lambda_drivable=0.5):
+        """
+        Args:
+            lambda_drivable: Weight for drivable area loss (default: 0.5)
+        """
+        super(MultiTaskLoss, self).__init__()
+        self.lambda_drivable = lambda_drivable
+        self.lane_loss_fn = nn.BCEWithLogitsLoss()
+        self.drivable_loss_fn = nn.BCEWithLogitsLoss()
+    
+    def forward(self, net_output, lane_label, drivable_label=None):
+        """
+        Compute multi-task loss
+        
+        Args:
+            net_output: Model output dictionary
+            lane_label: Ground truth lane mask (B, 1, H, W) or (B, H, W)
+            drivable_label: Ground truth drivable area mask (B, 1, H, W) or (B, H, W)
+        
+        Returns:
+            Tuple of (total_loss, lane_loss, drivable_loss)
+        """
+        # Get lane logits
+        lane_logits = net_output['lane_logits']
+        
+        # Ensure labels are correct shape
+        if len(lane_label.shape) == 3:
+            lane_label = lane_label.unsqueeze(1).float()
+        else:
+            lane_label = lane_label.float()
+        
+        # Compute lane loss
+        lane_loss = self.lane_loss_fn(lane_logits, lane_label)
+        
+        # Compute drivable loss if available
+        drivable_loss = None
+        if drivable_label is not None and 'drivable_logits' in net_output:
+            drivable_logits = net_output['drivable_logits']
+            
+            # Ensure labels are correct shape
+            if len(drivable_label.shape) == 3:
+                drivable_label = drivable_label.unsqueeze(1).float()
+            else:
+                drivable_label = drivable_label.float()
+            
+            drivable_loss = self.drivable_loss_fn(drivable_logits, drivable_label)
+        
+        # Compute total loss
+        if drivable_loss is not None:
+            total_loss = lane_loss + self.lambda_drivable * drivable_loss
+        else:
+            total_loss = lane_loss
+            drivable_loss = torch.tensor(0.0, device=lane_loss.device)
+        
+        return total_loss, lane_loss, drivable_loss
 
 

@@ -15,4 +15,15 @@ def parse_args():
     parser.add_argument("--max_lanes", type=int, default=4, help="Maximum number of lanes to track")
     parser.add_argument("--sequence", action="store_true", help="Process multiple images as sequence (for Kalman)")
     parser.add_argument("--img_pattern", help="Image pattern for sequence (e.g., './data/test_kalman/*.jpg')")
+    
+    # LaneNetPlus specific arguments
+    parser.add_argument("--use_lanenet_plus", action='store_true',
+                       help="Use LaneNetPlus instead of LaneNet")
+    parser.add_argument("--use_attention", action='store_true',
+                       help="Use self-attention blocks (must match training)")
+    parser.add_argument("--use_multitask", action='store_true',
+                       help="Enable multi-task output (must match training)")
+    parser.add_argument("--use_rectification", action='store_true',
+                       help="Apply homography rectification preprocessing")
+    
     return parser.parse_args()

@@ -16,4 +16,21 @@ def parse_args():
     parser.add_argument("--image", default="./output", help="output image folder")
     parser.add_argument("--net", help="backbone network")
     parser.add_argument("--json", help="post processing json")
+    
+    # LaneNetPlus specific arguments
+    parser.add_argument("--use_lanenet_plus", action='store_true', 
+                       help="Use LaneNetPlus instead of LaneNet")
+    parser.add_argument("--use_attention", action='store_true',
+                       help="Use self-attention blocks in encoder")
+    parser.add_argument("--use_multitask", action='store_true',
+                       help="Enable multi-task learning (lane + drivable area)")
+    parser.add_argument("--use_rectification", action='store_true',
+                       help="Use homography rectification preprocessing")
+    parser.add_argument("--lambda_drivable", type=float, default=0.5,
+                       help="Weight for drivable area loss in multi-task learning")
+    parser.add_argument("--drivable_dir", type=str, default=None,
+                       help="Directory containing drivable area masks")
+    parser.add_argument("--save_visualizations", action='store_true',
+                       help="Save visualization images during training")
+    
     return parser.parse_args()

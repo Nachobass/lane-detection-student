@@ -18,13 +18,28 @@ import random
 
 
 class TusimpleSet(Dataset):
-    def __init__(self, dataset, n_labels=3, transform=None, target_transform=None):
+    def __init__(self, dataset, n_labels=3, transform=None, target_transform=None, 
+                 drivable_dir=None, use_drivable=False):
+        """
+        TuSimple Dataset Loader with optional drivable area support
+        
+        Args:
+            dataset: Path to dataset file (train.txt or val.txt)
+            n_labels: Number of instance labels
+            transform: Image transforms
+            target_transform: Target/mask transforms
+            drivable_dir: Directory containing drivable area masks (optional)
+            use_drivable: Whether to load drivable area masks
+        """
         self._gt_img_list = []
         self._gt_label_binary_list = []
         self._gt_label_instance_list = []
+        self._gt_label_drivable_list = []
         self.transform = transform
         self.target_transform = target_transform
         self.n_labels = n_labels
+        self.use_drivable = use_drivable
+        self.drivable_dir = drivable_dir
 
         with open(dataset, 'r') as file:
             for _info in file:
@@ -33,16 +48,38 @@ class TusimpleSet(Dataset):
                 self._gt_img_list.append(info_tmp[0])
                 self._gt_label_binary_list.append(info_tmp[1])
                 self._gt_label_instance_list.append(info_tmp[2])
+                
+                # Try to load drivable area mask if enabled
+                if self.use_drivable and self.drivable_dir:
+                    # Construct drivable mask path from image path
+                    img_path = info_tmp[0]
+                    img_name = os.path.basename(img_path)
+                    img_name_no_ext = os.path.splitext(img_name)[0]
+                    drivable_path = os.path.join(self.drivable_dir, f"{img_name_no_ext}.png")
+                    # If doesn't exist, try .jpg
+                    if not os.path.exists(drivable_path):
+                        drivable_path = os.path.join(self.drivable_dir, f"{img_name_no_ext}.jpg")
+                    self._gt_label_drivable_list.append(drivable_path)
+                else:
+                    self._gt_label_drivable_list.append(None)
 
         assert len(self._gt_img_list) == len(self._gt_label_binary_list) == len(self._gt_label_instance_list)
+        if self.use_drivable:
+            assert len(self._gt_label_drivable_list) == len(self._gt_img_list)
 
         self._shuffle()
 
     def _shuffle(self):
         # randomly shuffle all list identically
-        c = list(zip(self._gt_img_list, self._gt_label_binary_list, self._gt_label_instance_list))
-        random.shuffle(c)
-        self._gt_img_list, self._gt_label_binary_list, self._gt_label_instance_list = zip(*c)
+        if self.use_drivable:
+            c = list(zip(self._gt_img_list, self._gt_label_binary_list, 
+                        self._gt_label_instance_list, self._gt_label_drivable_list))
+            random.shuffle(c)
+            self._gt_img_list, self._gt_label_binary_list, self._gt_label_instance_list, self._gt_label_drivable_list = zip(*c)
+        else:
+            c = list(zip(self._gt_img_list, self._gt_label_binary_list, self._gt_label_instance_list))
+            random.shuffle(c)
+            self._gt_img_list, self._gt_label_binary_list, self._gt_label_instance_list = zip(*c)
 
     def __len__(self):
         return len(self._gt_img_list)
@@ -52,7 +89,6 @@ class TusimpleSet(Dataset):
                == len(self._gt_img_list)
 
         # load all
-
         img = Image.open(self._gt_img_list[idx])
         label_instance_img = cv2.imread(self._gt_label_instance_list[idx], cv2.IMREAD_UNCHANGED)
         label_img = cv2.imread(self._gt_label_binary_list[idx], cv2.IMREAD_COLOR)
@@ -68,5 +104,26 @@ class TusimpleSet(Dataset):
         mask = np.where((label_img[:, :, :] != [0, 0, 0]).all(axis=2))
         label_binary[mask] = 1
 
-        # we could split the instance label here, each instance in one channel (basically a binary mask for each)
-        return img, label_binary, label_instance_img
+        # Load drivable area mask if enabled
+        label_drivable = None
+        if self.use_drivable and self._gt_label_drivable_list[idx] is not None:
+            drivable_path = self._gt_label_drivable_list[idx]
+            if os.path.exists(drivable_path):
+                label_drivable = cv2.imread(drivable_path, cv2.IMREAD_GRAYSCALE)
+                if label_drivable is not None:
+                    if self.target_transform:
+                        label_drivable = self.target_transform(label_drivable)
+                    # Binarize (threshold at 127)
+                    label_drivable = (label_drivable > 127).astype(np.uint8)
+                else:
+                    # Create empty placeholder if loading failed
+                    label_drivable = np.zeros([label_img.shape[0], label_img.shape[1]], dtype=np.uint8)
+            else:
+                # Create empty placeholder if file doesn't exist
+                label_drivable = np.zeros([label_img.shape[0], label_img.shape[1]], dtype=np.uint8)
+        
+        # Return with or without drivable mask
+        if label_drivable is not None:
+            return img, label_binary, label_instance_img, label_drivable
+        else:
+            return img, label_binary, label_instance_img
