@@ -1,23 +1,47 @@
+# coding: utf-8
+"""
+Training function for LaneNet with temporal ConvLSTM support
+Supports two-phase training: Phase 1 (frozen encoder) and Phase 2 (full fine-tuning)
+"""
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import numpy as np
 import time
 import copy
-from model.lanenet.loss import DiscriminativeLoss, FocalLoss
+import os
+import argparse
+from torch.utils.data import DataLoader
 
-def compute_loss(net_output, binary_label, instance_label, loss_type = 'FocalLoss'):
-    k_binary = 10    #1.7
+from model.lanenet.loss import DiscriminativeLoss, FocalLoss
+from model.lanenet.LaneNet import LaneNet
+from dataloader.sequence_dataset import SequenceDataset
+
+
+def compute_loss(net_output, binary_label, instance_label, loss_type='FocalLoss'):
+    """
+    Compute loss for LaneNet output
+    
+    Args:
+        net_output: Model output dictionary
+        binary_label: Ground truth binary mask
+        instance_label: Ground truth instance mask
+        loss_type: Type of loss function
+    
+    Returns:
+        Tuple of (total_loss, binary_loss, instance_loss, out)
+    """
+    k_binary = 10
     k_instance = 0.3
     k_dist = 1.0
 
-    if(loss_type == 'FocalLoss'):
+    if loss_type == 'FocalLoss':
         loss_fn = FocalLoss(gamma=2, alpha=[0.25, 0.75])
-    elif(loss_type == 'CrossEntropyLoss'):
+    elif loss_type == 'CrossEntropyLoss':
         loss_fn = nn.CrossEntropyLoss()
     else:
-        # print("Wrong loss type, will use the default CrossEntropyLoss")
         loss_fn = nn.CrossEntropyLoss()
     
     binary_seg_logits = net_output["binary_seg_logits"]
@@ -36,9 +60,368 @@ def compute_loss(net_output, binary_label, instance_label, loss_type = 'FocalLos
     return total_loss, binary_loss, instance_loss, out
 
 
-def train_model(model, optimizer, scheduler, dataloaders, dataset_sizes, device, loss_type = 'FocalLoss', num_epochs=25):
+def compute_iou(pred, target):
+    """
+    Compute binary IoU between predictions and targets
+    
+    Args:
+        pred: Predictions (logits or probabilities)
+        target: Ground truth masks
+    
+    Returns:
+        IoU score
+    """
+    if pred.dim() > 2:
+        # If pred is logits, convert to binary
+        if pred.shape[1] == 2:
+            pred_binary = (torch.argmax(pred, dim=1) > 0).float()
+        else:
+            pred_binary = (pred > 0.5).float()
+    else:
+        pred_binary = (pred > 0.5).float()
+    
+    if target.dim() > 2:
+        target_binary = (target > 0.5).float()
+    else:
+        target_binary = (target > 0.5).float()
+    
+    # Flatten for batch computation
+    pred_flat = pred_binary.view(pred_binary.size(0), -1)
+    target_flat = target_binary.view(target_binary.size(0), -1)
+    
+    intersection = (pred_flat * target_flat).sum(dim=1)
+    union = pred_flat.sum(dim=1) + target_flat.sum(dim=1) - intersection
+    
+    iou = (intersection / (union + 1e-6)).mean()
+    return iou.item()
+
+
+def reshape_sequence_input(stacked_tensor, sequence_length):
+    """
+    Reshape stacked tensor from SequenceDataset [B, T*3, H, W] to [B, T, 3, H, W]
+    
+    Args:
+        stacked_tensor: Tensor of shape [B, T*3, H, W]
+        sequence_length: Number of frames T
+    
+    Returns:
+        Reshaped tensor of shape [B, T, 3, H, W]
+    """
+    B, C, H, W = stacked_tensor.shape
+    # Reshape: [B, T*3, H, W] -> [B, T, 3, H, W]
+    return stacked_tensor.view(B, sequence_length, 3, H, W)
+
+
+def train_temporal_model(
+    model,
+    train_loader,
+    val_loader,
+    device,
+    loss_type='FocalLoss',
+    num_epochs_phase1=5,
+    num_epochs_phase2=20,
+    freeze_encoder=True,
+    save_dir='./log',
+    lr_phase1=1e-3,
+    lr_phase2=1e-4
+):
+    """
+    Train LaneNet with temporal support in two phases
+    
+    Phase 1: Train only ConvLSTM (encoder frozen)
+    Phase 2: Fine-tune entire network (encoder + decoder + ConvLSTM)
+    
+    Args:
+        model: LaneNet model with use_temporal=True
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        device: Device to train on
+        loss_type: Loss function type
+        num_epochs_phase1: Number of epochs for phase 1
+        num_epochs_phase2: Number of epochs for phase 2
+        freeze_encoder: Whether to freeze encoder in phase 1
+        save_dir: Directory to save checkpoints
+        lr_phase1: Learning rate for phase 1
+        lr_phase2: Learning rate for phase 2
+    
+    Returns:
+        Tuple of (trained_model, training_log)
+    """
     since = time.time()
-    training_log = {'epoch':[], 'training_loss':[], 'val_loss':[]}
+    training_log = {
+        'epoch': [],
+        'phase': [],
+        'training_loss': [],
+        'val_loss': [],
+        'val_iou': []
+    }
+    best_loss = float("inf")
+    best_model_wts = copy.deepcopy(model.state_dict())
+    
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # ============================================================
+    # PHASE 1: Train only ConvLSTM (encoder frozen)
+    # ============================================================
+    if freeze_encoder:
+        print("\n" + "="*60)
+        print("PHASE 1: Training ConvLSTM with frozen encoder")
+        print("="*60)
+        
+        # Freeze encoder
+        if hasattr(model, '_encoder'):
+            for param in model._encoder.parameters():
+                param.requires_grad = False
+            print("Encoder frozen")
+        
+        # Freeze decoder (optional - uncomment if needed)
+        # for param in model._decoder_binary.parameters():
+        #     param.requires_grad = False
+        # for param in model._decoder_instance.parameters():
+        #     param.requires_grad = False
+        
+        # Only train ConvLSTM (and decoder if not frozen)
+        trainable_params = [p for p in model.parameters() if p.requires_grad]
+        optimizer = optim.Adam(trainable_params, lr=lr_phase1)
+        print(f"Training {sum(p.numel() for p in trainable_params)} parameters")
+        
+        # Training loop Phase 1
+        for epoch in range(num_epochs_phase1):
+            training_log['epoch'].append(epoch)
+            training_log['phase'].append(1)
+            print(f'\nPhase 1 - Epoch {epoch}/{num_epochs_phase1 - 1}')
+            print('-' * 10)
+            
+            # Training phase
+            model.train()
+            running_loss = 0.0
+            running_loss_b = 0.0
+            running_loss_i = 0.0
+            
+            for batch_idx, (images, masks) in enumerate(train_loader):
+                # Reshape if needed: [B, T*3, H, W] -> [B, T, 3, H, W]
+                if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
+                    images = reshape_sequence_input(images, model.sequence_length)
+                
+                images = images.to(device)
+                masks = masks.to(device)
+                
+                # Handle mask shape: [B, 1, H, W] or [B, H, W]
+                if masks.dim() == 4:
+                    binary_masks = masks.squeeze(1).long()  # [B, H, W]
+                else:
+                    binary_masks = masks.long()
+                
+                # Create instance mask (same as binary for now)
+                instance_masks = masks.float()
+                
+                optimizer.zero_grad()
+                
+                # Forward pass
+                outputs = model(images)
+                loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
+                
+                # Backward pass
+                loss[0].backward()
+                optimizer.step()
+                
+                # Statistics
+                running_loss += loss[0].item() * images.size(0)
+                running_loss_b += loss[1].item() * images.size(0)
+                running_loss_i += loss[2].item() * images.size(0)
+            
+            epoch_loss = running_loss / len(train_loader.dataset)
+            binary_loss = running_loss_b / len(train_loader.dataset)
+            instance_loss = running_loss_i / len(train_loader.dataset)
+            
+            # Validation
+            model.eval()
+            val_loss = 0.0
+            val_iou = 0.0
+            
+            with torch.no_grad():
+                for images, masks in val_loader:
+                    if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
+                        images = reshape_sequence_input(images, model.sequence_length)
+                    
+                    images = images.to(device)
+                    masks = masks.to(device)
+                    
+                    if masks.dim() == 4:
+                        binary_masks = masks.squeeze(1).long()
+                    else:
+                        binary_masks = masks.long()
+                    
+                    instance_masks = masks.float()
+                    
+                    outputs = model(images)
+                    loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
+                    val_loss += loss[0].item() * images.size(0)
+                    
+                    # Compute IoU
+                    iou = compute_iou(outputs['binary_seg_logits'], binary_masks)
+                    val_iou += iou * images.size(0)
+            
+            val_loss = val_loss / len(val_loader.dataset)
+            val_iou = val_iou / len(val_loader.dataset)
+            
+            print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f}, Instance: {instance_loss:.4f})')
+            print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f}')
+            
+            training_log['training_loss'].append(epoch_loss)
+            training_log['val_loss'].append(val_loss)
+            training_log['val_iou'].append(val_iou)
+            
+            # Save checkpoint
+            if val_loss < best_loss:
+                best_loss = val_loss
+                best_model_wts = copy.deepcopy(model.state_dict())
+            
+            # Save phase 1 checkpoint
+            checkpoint_path = os.path.join(save_dir, 'ckpt_phase1.pth')
+            torch.save(model.state_dict(), checkpoint_path)
+        
+        print(f"\nPhase 1 complete. Best val loss: {best_loss:.4f}")
+        print(f"Checkpoint saved: {checkpoint_path}")
+    
+    # ============================================================
+    # PHASE 2: Fine-tune entire network
+    # ============================================================
+    print("\n" + "="*60)
+    print("PHASE 2: Fine-tuning entire network")
+    print("="*60)
+    
+    # Unfreeze encoder and decoder
+    if hasattr(model, '_encoder'):
+        for param in model._encoder.parameters():
+            param.requires_grad = True
+        print("Encoder unfrozen")
+    
+    for param in model._decoder_binary.parameters():
+        param.requires_grad = True
+    for param in model._decoder_instance.parameters():
+        param.requires_grad = True
+    
+    # Create new optimizer with all parameters
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = optim.Adam(trainable_params, lr=lr_phase2)
+    print(f"Training {sum(p.numel() for p in trainable_params)} parameters")
+    
+    # Load best model from phase 1
+    model.load_state_dict(best_model_wts)
+    best_loss = float("inf")
+    
+    # Training loop Phase 2
+    for epoch in range(num_epochs_phase2):
+        training_log['epoch'].append(num_epochs_phase1 + epoch)
+        training_log['phase'].append(2)
+        print(f'\nPhase 2 - Epoch {epoch}/{num_epochs_phase2 - 1}')
+        print('-' * 10)
+        
+        # Training phase
+        model.train()
+        running_loss = 0.0
+        running_loss_b = 0.0
+        running_loss_i = 0.0
+        
+        for batch_idx, (images, masks) in enumerate(train_loader):
+            if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
+                images = reshape_sequence_input(images, model.sequence_length)
+            
+            images = images.to(device)
+            masks = masks.to(device)
+            
+            if masks.dim() == 4:
+                binary_masks = masks.squeeze(1).long()
+            else:
+                binary_masks = masks.long()
+            
+            instance_masks = masks.float()
+            
+            optimizer.zero_grad()
+            
+            outputs = model(images)
+            loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
+            
+            loss[0].backward()
+            optimizer.step()
+            
+            running_loss += loss[0].item() * images.size(0)
+            running_loss_b += loss[1].item() * images.size(0)
+            running_loss_i += loss[2].item() * images.size(0)
+        
+        epoch_loss = running_loss / len(train_loader.dataset)
+        binary_loss = running_loss_b / len(train_loader.dataset)
+        instance_loss = running_loss_i / len(train_loader.dataset)
+        
+        # Validation
+        model.eval()
+        val_loss = 0.0
+        val_iou = 0.0
+        
+        with torch.no_grad():
+            for images, masks in val_loader:
+                if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
+                    images = reshape_sequence_input(images, model.sequence_length)
+                
+                images = images.to(device)
+                masks = masks.to(device)
+                
+                if masks.dim() == 4:
+                    binary_masks = masks.squeeze(1).long()
+                else:
+                    binary_masks = masks.long()
+                
+                instance_masks = masks.float()
+                
+                outputs = model(images)
+                loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
+                val_loss += loss[0].item() * images.size(0)
+                
+                iou = compute_iou(outputs['binary_seg_logits'], binary_masks)
+                val_iou += iou * images.size(0)
+        
+        val_loss = val_loss / len(val_loader.dataset)
+        val_iou = val_iou / len(val_loader.dataset)
+        
+        print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f}, Instance: {instance_loss:.4f})')
+        print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f}')
+        
+        training_log['training_loss'].append(epoch_loss)
+        training_log['val_loss'].append(val_loss)
+        training_log['val_iou'].append(val_iou)
+        
+        # Save checkpoint
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_model_wts = copy.deepcopy(model.state_dict())
+        
+        # Save periodic checkpoints
+        if (epoch + 1) % 5 == 0 or epoch == num_epochs_phase2 - 1:
+            checkpoint_path = os.path.join(save_dir, f'ckpt_phase2_epoch{epoch+1}.pth')
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"Checkpoint saved: {checkpoint_path}")
+    
+    time_elapsed = time.time() - since
+    print(f'\nTraining complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+    print(f'Best val_loss: {best_loss:.4f}')
+    
+    # Convert lists to numpy arrays
+    for key in training_log:
+        if key != 'phase':
+            training_log[key] = np.array(training_log[key])
+    
+    # Load best model weights
+    model.load_state_dict(best_model_wts)
+    return model, training_log
+
+
+def train_model(model, optimizer, scheduler, dataloaders, dataset_sizes, device, loss_type='FocalLoss', num_epochs=25):
+    """
+    Original training function for backward compatibility (non-temporal mode)
+    """
+    since = time.time()
+    training_log = {'epoch': [], 'training_loss': [], 'val_loss': []}
     best_loss = float("inf")
 
     best_model_wts = copy.deepcopy(model.state_dict())
@@ -51,9 +434,9 @@ def train_model(model, optimizer, scheduler, dataloaders, dataset_sizes, device,
         # Each epoch has a training and validation phase
         for phase in ['train', 'val']:
             if phase == 'train':
-                model.train()  # Set model to training mode
+                model.train()
             else:
-                model.eval()   # Set model to evaluate mode
+                model.eval()
 
             running_loss = 0.0
             running_loss_b = 0.0
@@ -69,7 +452,6 @@ def train_model(model, optimizer, scheduler, dataloaders, dataset_sizes, device,
                 optimizer.zero_grad()
 
                 # forward
-                # track history if only in train
                 with torch.set_grad_enabled(phase == 'train'):
                     outputs = model(inputs)
                     loss = compute_loss(outputs, binarys, instances, loss_type)
@@ -91,7 +473,8 @@ def train_model(model, optimizer, scheduler, dataloaders, dataset_sizes, device,
             epoch_loss = running_loss / dataset_sizes[phase]
             binary_loss = running_loss_b / dataset_sizes[phase]
             instance_loss = running_loss_i / dataset_sizes[phase]
-            print('{} Total Loss: {:.4f} Binary Loss: {:.4f} Instance Loss: {:.4f}'.format(phase, epoch_loss, binary_loss, instance_loss))
+            print('{} Total Loss: {:.4f} Binary Loss: {:.4f} Instance Loss: {:.4f}'.format(
+                phase, epoch_loss, binary_loss, instance_loss))
 
             # deep copy the model
             if phase == 'train':
@@ -115,7 +498,9 @@ def train_model(model, optimizer, scheduler, dataloaders, dataset_sizes, device,
     model.load_state_dict(best_model_wts)
     return model, training_log
 
+
 def trans_to_cuda(variable):
+    """Helper function to move variable to CUDA"""
     if torch.cuda.is_available():
         return variable.cuda()
     else:

@@ -16,4 +16,17 @@ def parse_args():
     parser.add_argument("--image", default="./output", help="output image folder")
     parser.add_argument("--net", help="backbone network")
     parser.add_argument("--json", help="post processing json")
+    
+    # Temporal training arguments
+    parser.add_argument("--use_temporal", action='store_true', default=False,
+                       help="Enable temporal training with ConvLSTM")
+    parser.add_argument("--sequence_length", type=int, default=3,
+                       help="Number of frames in sequence")
+    parser.add_argument("--freeze_encoder", action='store_true', default=True,
+                       help="Freeze encoder during phase 1 training")
+    parser.add_argument("--num_epochs_phase1", type=int, default=5,
+                       help="Number of epochs for phase 1 (ConvLSTM only)")
+    parser.add_argument("--num_epochs_phase2", type=int, default=20,
+                       help="Number of epochs for phase 2 (full fine-tuning)")
+    
     return parser.parse_args()
