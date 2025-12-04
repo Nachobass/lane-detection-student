@@ -38,7 +38,7 @@ def compute_loss(net_output, binary_label, instance_label, loss_type='FocalLoss'
     #   - Higher values (10-20) force model to focus more on detecting lane pixels
     #   - Current: 10 (already quite high)
     #   - If model struggles with lane detection, try increasing to 15-20
-    k_binary = 10  # Try 15-20 if lanes are not being detected well
+    k_binary = 20  # Try 15-20 if lanes are not being detected well
     
     # k_instance: Weight for instance segmentation loss (separating different lanes)
     #   - Lower values (0.3-0.5) are typical
@@ -312,8 +312,10 @@ def train_temporal_model(
             val_loss = val_loss / len(val_loader.dataset)
             val_iou = val_iou / len(val_loader.dataset)
             
-            print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f}, Instance: {instance_loss:.4f})')
-            print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f}')
+            # Show weighted and unweighted losses for better understanding
+            binary_loss_unweighted = binary_loss / 10.0  # k_binary = 10
+            print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_unweighted:.4f}], Instance: {instance_loss:.4f})')
+            print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%)')
             
             training_log['training_loss'].append(epoch_loss)
             training_log['val_loss'].append(val_loss)
@@ -431,8 +433,10 @@ def train_temporal_model(
         val_loss = val_loss / len(val_loader.dataset)
         val_iou = val_iou / len(val_loader.dataset)
         
-        print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f}, Instance: {instance_loss:.4f})')
-        print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f}')
+        # Show weighted and unweighted losses for better understanding
+        binary_loss_unweighted = binary_loss / 10.0  # k_binary = 10
+        print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_unweighted:.4f}], Instance: {instance_loss:.4f})')
+        print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%)')
         
         training_log['training_loss'].append(epoch_loss)
         training_log['val_loss'].append(val_loss)
