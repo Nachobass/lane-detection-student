@@ -505,3 +505,122 @@ def trans_to_cuda(variable):
         return variable.cuda()
     else:
         return variable
+
+
+if __name__ == '__main__':
+    """
+    Direct execution of train_lanenet.py for temporal training
+    Usage: python -m model.lanenet.train_lanenet --dataset ./data/training_data_example --use_temporal
+    """
+    import sys
+    import os
+    from torch.utils.data import DataLoader
+    
+    # Add parent directories to path for imports
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../..'))
+    
+    from model.utils.cli_helper import parse_args
+    from dataloader.sequence_dataset import SequenceDataset
+    from dataloader.data_loaders import TusimpleSet
+    from dataloader.transformers import Rescale
+    from torchvision import transforms
+    import pandas as pd
+    
+    DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    
+    args = parse_args()
+    
+    if not args.use_temporal:
+        print("ERROR: train_lanenet.py is designed for temporal training.")
+        print("Please use --use_temporal flag or use train.py for standard training.")
+        sys.exit(1)
+    
+    if not args.dataset:
+        print("ERROR: --dataset argument is required")
+        sys.exit(1)
+    
+    save_path = args.save
+    if not os.path.isdir(save_path):
+        os.makedirs(save_path)
+    
+    train_dataset_file = os.path.join(args.dataset, 'train.txt')
+    val_dataset_file = os.path.join(args.dataset, 'val.txt')
+    
+    resize_height = args.height
+    resize_width = args.width
+    
+    # Load image and mask paths from train.txt and val.txt for SequenceDataset
+    train_image_paths = []
+    train_mask_paths = []
+    with open(train_dataset_file, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                train_image_paths.append(parts[0])
+                train_mask_paths.append(parts[1])  # Using binary mask path
+    
+    val_image_paths = []
+    val_mask_paths = []
+    with open(val_dataset_file, 'r') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                val_image_paths.append(parts[0])
+                val_mask_paths.append(parts[1])  # Using binary mask path
+    
+    # Create SequenceDataset for temporal training
+    train_dataset = SequenceDataset(
+        train_image_paths, 
+        train_mask_paths, 
+        sequence_len=args.sequence_length,
+        target_size=(resize_width, resize_height)
+    )
+    train_loader = DataLoader(train_dataset, batch_size=args.bs, shuffle=True)
+    
+    val_dataset = SequenceDataset(
+        val_image_paths,
+        val_mask_paths,
+        sequence_len=args.sequence_length,
+        target_size=(resize_width, resize_height)
+    )
+    val_loader = DataLoader(val_dataset, batch_size=args.bs, shuffle=False)
+    
+    # Create model with temporal support
+    model = LaneNet(arch=args.model_type, use_temporal=True, sequence_length=args.sequence_length)
+    model.to(DEVICE)
+    
+    print(f"Temporal training enabled with sequence length: {args.sequence_length}")
+    print(f"Phase 1: {args.num_epochs_phase1} epochs, Phase 2: {args.num_epochs_phase2} epochs")
+    print(f"{len(train_dataset)} training samples\n")
+    
+    # Use temporal training function
+    model, log = train_temporal_model(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        device=DEVICE,
+        loss_type=args.loss_type,
+        num_epochs_phase1=args.num_epochs_phase1,
+        num_epochs_phase2=args.num_epochs_phase2,
+        freeze_encoder=args.freeze_encoder,
+        save_dir=save_path,
+        lr_phase1=args.lr,
+        lr_phase2=args.lr * 0.1  # Lower learning rate for phase 2
+    )
+    
+    # Create DataFrame with temporal training log
+    df = pd.DataFrame({
+        'epoch': log['epoch'],
+        'phase': log['phase'],
+        'training_loss': log['training_loss'],
+        'val_loss': log['val_loss'],
+        'val_iou': log.get('val_iou', [0] * len(log['epoch']))
+    })
+    
+    train_log_save_filename = os.path.join(save_path, 'training_log.csv')
+    df.to_csv(train_log_save_filename, columns=['epoch','phase','training_loss','val_loss','val_iou'], header=True,index=False,encoding='utf-8')
+    print("training log is saved: {}".format(train_log_save_filename))
+    
+    model_save_filename = os.path.join(save_path, 'best_model.pth')
+    torch.save(model.state_dict(), model_save_filename)
+    print("model is saved: {}".format(model_save_filename))
