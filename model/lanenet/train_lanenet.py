@@ -58,6 +58,7 @@ def compute_loss(net_output, binary_label, instance_label, loss_type='FocalLoss'
     pix_embedding = net_output["instance_seg_logits"]
     ds_loss_fn = DiscriminativeLoss(0.5, 1.5, 1.0, 1.0, 0.001)
     var_loss, dist_loss, reg_loss = ds_loss_fn(pix_embedding, instance_label)
+    binary_loss_raw = binary_loss  # Save raw value before weighting
     binary_loss = binary_loss * k_binary
     var_loss = var_loss * k_instance
     dist_loss = dist_loss * k_dist
@@ -65,7 +66,7 @@ def compute_loss(net_output, binary_label, instance_label, loss_type='FocalLoss'
     total_loss = binary_loss + instance_loss
     out = net_output["binary_seg_pred"]
 
-    return total_loss, binary_loss, instance_loss, out
+    return total_loss, binary_loss, instance_loss, out, binary_loss_raw
 
 
 def compute_iou(pred, target):
@@ -208,6 +209,7 @@ def train_temporal_model(
             running_loss = 0.0
             running_loss_b = 0.0
             running_loss_i = 0.0
+            running_binary_loss_raw = 0.0
             
             for batch_idx, (images, masks) in enumerate(train_loader):
                 # Reshape if needed: [B, T*3, H, W] -> [B, T, 3, H, W]
@@ -237,9 +239,10 @@ def train_temporal_model(
                 # Forward pass
                 outputs = model(images)
                 loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
+                total_loss, binary_loss, instance_loss, out, binary_loss_raw = loss
                 
                 # Backward pass
-                loss[0].backward()
+                total_loss.backward()
                 
                 # Debug: Check if gradients are flowing (only first batch of first epoch)
                 # IMPORTANT: Check AFTER backward() but BEFORE optimizer.step()
@@ -273,13 +276,19 @@ def train_temporal_model(
                 optimizer.step()
                 
                 # Statistics
-                running_loss += loss[0].item() * images.size(0)
-                running_loss_b += loss[1].item() * images.size(0)
-                running_loss_i += loss[2].item() * images.size(0)
+                running_loss += total_loss.item() * images.size(0)
+                running_loss_b += binary_loss.item() * images.size(0)
+                running_loss_i += instance_loss.item() * images.size(0)
+                # Also track raw binary loss for display
+                if epoch == 0 and batch_idx == 0:
+                    running_binary_loss_raw = binary_loss_raw.item() * images.size(0)
+                else:
+                    running_binary_loss_raw += binary_loss_raw.item() * images.size(0)
             
             epoch_loss = running_loss / len(train_loader.dataset)
             binary_loss = running_loss_b / len(train_loader.dataset)
             instance_loss = running_loss_i / len(train_loader.dataset)
+            binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
             
             # Validation
             model.eval()
@@ -303,7 +312,8 @@ def train_temporal_model(
                     
                     outputs = model(images)
                     loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
-                    val_loss += loss[0].item() * images.size(0)
+                    total_loss_val, _, _, _, _ = loss
+                    val_loss += total_loss_val.item() * images.size(0)
                     
                     # Compute IoU
                     iou = compute_iou(outputs['binary_seg_logits'], binary_masks)
@@ -313,8 +323,7 @@ def train_temporal_model(
             val_iou = val_iou / len(val_loader.dataset)
             
             # Show weighted and unweighted losses for better understanding
-            binary_loss_unweighted = binary_loss / 10.0  # k_binary = 10
-            print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_unweighted:.4f}], Instance: {instance_loss:.4f})')
+            print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_raw_avg:.4f}], Instance: {instance_loss:.4f})')
             print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%)')
             
             training_log['training_loss'].append(epoch_loss)
@@ -372,6 +381,7 @@ def train_temporal_model(
         running_loss = 0.0
         running_loss_b = 0.0
         running_loss_i = 0.0
+        running_binary_loss_raw = 0.0
         
         for batch_idx, (images, masks) in enumerate(train_loader):
             if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
@@ -391,17 +401,20 @@ def train_temporal_model(
             
             outputs = model(images)
             loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
+            total_loss, binary_loss, instance_loss, out, binary_loss_raw = loss
             
-            loss[0].backward()
+            total_loss.backward()
             optimizer.step()
             
-            running_loss += loss[0].item() * images.size(0)
-            running_loss_b += loss[1].item() * images.size(0)
-            running_loss_i += loss[2].item() * images.size(0)
+            running_loss += total_loss.item() * images.size(0)
+            running_loss_b += binary_loss.item() * images.size(0)
+            running_loss_i += instance_loss.item() * images.size(0)
+            running_binary_loss_raw += binary_loss_raw.item() * images.size(0)
         
         epoch_loss = running_loss / len(train_loader.dataset)
         binary_loss = running_loss_b / len(train_loader.dataset)
         instance_loss = running_loss_i / len(train_loader.dataset)
+        binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
         
         # Validation
         model.eval()
@@ -425,7 +438,8 @@ def train_temporal_model(
                 
                 outputs = model(images)
                 loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
-                val_loss += loss[0].item() * images.size(0)
+                total_loss_val, _, _, _, _ = loss
+                val_loss += total_loss_val.item() * images.size(0)
                 
                 iou = compute_iou(outputs['binary_seg_logits'], binary_masks)
                 val_iou += iou * images.size(0)
@@ -434,8 +448,8 @@ def train_temporal_model(
         val_iou = val_iou / len(val_loader.dataset)
         
         # Show weighted and unweighted losses for better understanding
-        binary_loss_unweighted = binary_loss / 10.0  # k_binary = 10
-        print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_unweighted:.4f}], Instance: {instance_loss:.4f})')
+        binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
+        print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_raw_avg:.4f}], Instance: {instance_loss:.4f})')
         print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%)')
         
         training_log['training_loss'].append(epoch_loss)
@@ -506,16 +520,17 @@ def train_model(model, optimizer, scheduler, dataloaders, dataset_sizes, device,
                 with torch.set_grad_enabled(phase == 'train'):
                     outputs = model(inputs)
                     loss = compute_loss(outputs, binarys, instances, loss_type)
+                    total_loss, binary_loss, instance_loss, out, _ = loss
 
                     # backward + optimize only if in training phase
                     if phase == 'train':
-                        loss[0].backward()
+                        total_loss.backward()
                         optimizer.step()
 
                 # statistics
-                running_loss += loss[0].item() * inputs.size(0)
-                running_loss_b += loss[1].item() * inputs.size(0)
-                running_loss_i += loss[2].item() * inputs.size(0)
+                running_loss += total_loss.item() * inputs.size(0)
+                running_loss_b += binary_loss.item() * inputs.size(0)
+                running_loss_i += instance_loss.item() * inputs.size(0)
 
             if phase == 'train':
                 if scheduler != None:
