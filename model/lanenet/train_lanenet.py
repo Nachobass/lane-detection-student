@@ -33,7 +33,15 @@ def compute_loss(net_output, binary_label, instance_label, loss_type='FocalLoss'
     Returns:
         Tuple of (total_loss, binary_loss, instance_loss, out)
     """
-    k_binary = 10
+    # Loss weights - adjust these to balance binary vs instance segmentation
+    # k_binary: Weight for binary segmentation loss (detecting lanes vs background)
+    #   - Higher values (10-20) force model to focus more on detecting lane pixels
+    #   - Current: 10 (already quite high)
+    #   - If model struggles with lane detection, try increasing to 15-20
+    k_binary = 10  # Try 15-20 if lanes are not being detected well
+    
+    # k_instance: Weight for instance segmentation loss (separating different lanes)
+    #   - Lower values (0.3-0.5) are typical
     k_instance = 0.3
     k_dist = 1.0
 
@@ -168,13 +176,13 @@ def train_temporal_model(
         print("PHASE 1: Training ConvLSTM with frozen encoder")
         print("="*60)
         
-        # Freeze encoder
+        # Freeze encoder - NO se entrenará en esta fase
         if hasattr(model, '_encoder'):
             for param in model._encoder.parameters():
-                param.requires_grad = False
+                param.requires_grad = False  # ← Esto hace que NO se entrene
             # IMPORTANT: Keep encoder in train mode so BatchNorm works correctly
             # Even though params are frozen, BatchNorm needs to update running stats
-            model._encoder.train()
+            model._encoder.train()  # Modo train solo para BatchNorm, NO para actualizar pesos
             print("Encoder frozen (params) but kept in train mode (for BatchNorm)")
         
         # Freeze decoder (optional - uncomment if needed)
@@ -230,22 +238,34 @@ def train_temporal_model(
                 outputs = model(images)
                 loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
                 
+                # Backward pass
+                loss[0].backward()
+                
                 # Debug: Check if gradients are flowing (only first batch of first epoch)
+                # IMPORTANT: Check AFTER backward() but BEFORE optimizer.step()
                 if epoch == 0 and batch_idx == 0:
                     # Check if ConvLSTM has gradients
                     if hasattr(model, 'conv_lstm'):
-                        conv_lstm_grad = None
+                        conv_lstm_grads = []
                         for name, param in model.conv_lstm.named_parameters():
                             if param.grad is not None:
-                                conv_lstm_grad = param.grad.abs().mean().item()
-                                break
-                        if conv_lstm_grad is not None:
-                            print(f"Debug - ConvLSTM gradient magnitude: {conv_lstm_grad:.6f}")
+                                conv_lstm_grads.append(param.grad.abs().mean().item())
+                        if conv_lstm_grads:
+                            avg_grad = sum(conv_lstm_grads) / len(conv_lstm_grads)
+                            print(f"Debug - ConvLSTM gradient magnitude: {avg_grad:.6f} (checked {len(conv_lstm_grads)} params)")
                         else:
                             print("Debug - WARNING: No gradients in ConvLSTM!")
-                
-                # Backward pass
-                loss[0].backward()
+                            # Try to check if encoder outputs have gradients
+                            print("Debug - Checking if encoder outputs have gradients...")
+                            # Check decoder gradients as fallback
+                            decoder_grads = []
+                            for name, param in model._decoder_binary.named_parameters():
+                                if param.grad is not None:
+                                    decoder_grads.append(param.grad.abs().mean().item())
+                            if decoder_grads:
+                                print(f"Debug - Decoder has gradients: {sum(decoder_grads)/len(decoder_grads):.6f}")
+                            else:
+                                print("Debug - ERROR: No gradients anywhere!")
                 
                 # Gradient clipping to prevent exploding gradients
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -318,7 +338,7 @@ def train_temporal_model(
     print("PHASE 2: Fine-tuning entire network")
     print("="*60)
     
-    # Unfreeze encoder and decoder
+    # Unfreeze encoder and decoder - AHORA SÍ SE ENTRENAN
     if hasattr(model, '_encoder'):
         for param in model._encoder.parameters():
             param.requires_grad = True
