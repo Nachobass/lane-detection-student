@@ -32,9 +32,20 @@ class ConvLSTMCell(nn.Module):
 
         return h, (h, c)
 
-    def init_hidden(self, batch_size, H, W):
-        h = torch.zeros(batch_size, self.hidden_dim, H, W).cuda()
-        c = torch.zeros(batch_size, self.hidden_dim, H, W).cuda()
+    def init_hidden(self, batch_size, H, W, device=None):
+        """
+        Initialize hidden state for ConvLSTM
+        
+        Args:
+            batch_size: Batch size
+            H: Height of feature map
+            W: Width of feature map
+            device: Device to create tensors on. If None, uses device of self.cell.conv.weight
+        """
+        if device is None:
+            device = next(self.cell.conv.parameters()).device
+        h = torch.zeros(batch_size, self.hidden_dim, H, W, device=device)
+        c = torch.zeros(batch_size, self.hidden_dim, H, W, device=device)
         return (h, c)
 
 
@@ -46,11 +57,13 @@ class ConvLSTM(nn.Module):
     def forward(self, seq_tensor):
         # seq_tensor: [B, T, C, H, W]
         B, T, C, H, W = seq_tensor.shape
-
-        state = self.cell.init_hidden(B, H, W)
+        
+        # Get device from input tensor
+        device = seq_tensor.device
+        state = self.cell.init_hidden(B, H, W, device=device)
 
         for t in range(T):
-            frame = seq_tensor[:, t]
+            frame = seq_tensor[:, t]  # [B, C, H, W]
             out, state = self.cell(frame, state)
 
-        return out  # el último estado
+        return out  # el último estado [B, C, H, W]

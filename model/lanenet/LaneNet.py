@@ -81,8 +81,19 @@ class LaneNet(nn.Module):
             instance = self._decoder_instance(c1, c2, c3, c4, c5)
         elif self._arch == 'ENet':
             if self.use_temporal:
-                # Temporal mode: input shape [B, T, 3, H, W]
-                B, T, C, H, W = input_tensor.shape
+                # Temporal mode: input shape should be [B, T, 3, H, W]
+                # Handle both [B, T, 3, H, W] and [B, T*3, H, W] formats
+                if input_tensor.dim() == 5:
+                    # Already in [B, T, 3, H, W] format
+                    B, T, C, H, W = input_tensor.shape
+                elif input_tensor.dim() == 4 and input_tensor.shape[1] == self.sequence_length * 3:
+                    # Reshape from [B, T*3, H, W] to [B, T, 3, H, W]
+                    B, C_total, H, W = input_tensor.shape
+                    T = self.sequence_length
+                    input_tensor = input_tensor.view(B, T, 3, H, W)
+                    B, T, C, H, W = input_tensor.shape
+                else:
+                    raise ValueError(f"Unexpected input shape for temporal mode: {input_tensor.shape}. Expected [B, T, 3, H, W] or [B, T*3, H, W]")
                 
                 # Process each frame through encoder
                 # Encoder is frozen (requires_grad=False), so no gradients for encoder params
@@ -90,7 +101,8 @@ class LaneNet(nn.Module):
                 encoded_frames = []
                 for t in range(T):
                     frame = input_tensor[:, t]  # [B, 3, H, W]
-                    encoded = self._encoder(frame)  # [B, 128, H/8, W/8]
+                    with torch.set_grad_enabled(self.training):  # Allow gradients to flow even if encoder is frozen
+                        encoded = self._encoder(frame)  # [B, 128, H/8, W/8]
                     encoded_frames.append(encoded)
                 
                 # Stack encoded frames: [B, T, 128, H/8, W/8]

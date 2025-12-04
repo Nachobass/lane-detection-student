@@ -172,7 +172,10 @@ def train_temporal_model(
         if hasattr(model, '_encoder'):
             for param in model._encoder.parameters():
                 param.requires_grad = False
-            print("Encoder frozen")
+            # IMPORTANT: Keep encoder in train mode so BatchNorm works correctly
+            # Even though params are frozen, BatchNorm needs to update running stats
+            model._encoder.train()
+            print("Encoder frozen (params) but kept in train mode (for BatchNorm)")
         
         # Freeze decoder (optional - uncomment if needed)
         # for param in model._decoder_binary.parameters():
@@ -200,11 +203,17 @@ def train_temporal_model(
             
             for batch_idx, (images, masks) in enumerate(train_loader):
                 # Reshape if needed: [B, T*3, H, W] -> [B, T, 3, H, W]
+                # The model can handle both formats, but we reshape here for consistency
                 if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
                     images = reshape_sequence_input(images, model.sequence_length)
                 
                 images = images.to(device)
                 masks = masks.to(device)
+                
+                # Debug: Verify input shape (only first batch of first epoch)
+                if epoch == 0 and batch_idx == 0:
+                    print(f"Debug - Input shape: {images.shape}, Expected: [B, {model.sequence_length}, 3, H, W]")
+                    print(f"Debug - Mask shape: {masks.shape}")
                 
                 # Handle mask shape: [B, 1, H, W] or [B, H, W]
                 if masks.dim() == 4:
@@ -221,8 +230,26 @@ def train_temporal_model(
                 outputs = model(images)
                 loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)
                 
+                # Debug: Check if gradients are flowing (only first batch of first epoch)
+                if epoch == 0 and batch_idx == 0:
+                    # Check if ConvLSTM has gradients
+                    if hasattr(model, 'conv_lstm'):
+                        conv_lstm_grad = None
+                        for name, param in model.conv_lstm.named_parameters():
+                            if param.grad is not None:
+                                conv_lstm_grad = param.grad.abs().mean().item()
+                                break
+                        if conv_lstm_grad is not None:
+                            print(f"Debug - ConvLSTM gradient magnitude: {conv_lstm_grad:.6f}")
+                        else:
+                            print("Debug - WARNING: No gradients in ConvLSTM!")
+                
                 # Backward pass
                 loss[0].backward()
+                
+                # Gradient clipping to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
                 optimizer.step()
                 
                 # Statistics
