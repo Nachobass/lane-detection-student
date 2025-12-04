@@ -1,0 +1,30 @@
+[project]
+name = "lane-detection-student"
+version = "0.1.0"
+description = "LaneNet lane detection with temporal ConvLSTM support"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=1.12.0",
+    "torchvision>=0.13.0",
+    "numpy>=1.21.0",
+    "pandas>=1.3.0",
+    "opencv-python>=4.5.0",
+    "Pillow>=8.0.0",
+    "matplotlib>=3.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []
+
