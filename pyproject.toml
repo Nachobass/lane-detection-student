@@ -12,6 +12,7 @@ dependencies = [
     "opencv-python>=4.5.0",
     "Pillow>=8.0.0",
     "matplotlib>=3.5.0",
+    "scikit-image>=0.21.0",
 ]
 
 [project.optional-dependencies]
