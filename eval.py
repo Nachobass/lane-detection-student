@@ -77,6 +77,15 @@ def evaluation():
     
     print(f"Model loaded from: {model_path}")
     print(f"Model type: {args.model_type}, Temporal: {args.use_temporal}")
+    
+    # Create output directory if saving images
+    save_dir = args.save
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        print(f"Output images will be saved to: {save_dir}")
+    
+    # Limit number of images to save (optional, set to None to save all)
+    max_images_to_save = 10  # Save first 10 images as examples
 
     iou, dice = 0, 0
     with torch.no_grad():
@@ -105,6 +114,47 @@ def evaluation():
             Score = Eval_Score(y_pred, y_true)
             dice += Score.Dice()
             iou += Score.IoU()
+            
+            # Save images if save_dir is specified
+            if save_dir and (max_images_to_save is None or batch_idx < max_images_to_save):
+                # Get input image (for temporal mode, use the last frame)
+                if args.use_temporal:
+                    # x is [B, T, 3, H, W], get last frame
+                    if x.dim() == 5:
+                        input_img = x[0, -1].cpu()  # Last frame [3, H, W]
+                    else:
+                        input_img = x[0].cpu()
+                else:
+                    input_img = x[0].cpu()
+                
+                # Denormalize input image
+                mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+                std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+                input_img = input_img * std + mean
+                input_img = torch.clamp(input_img, 0, 1)
+                input_img_np = (input_img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                
+                # Binary prediction (already 0 or 1)
+                binary_pred_np = (y_pred * 255).astype(np.uint8)
+                
+                # Ground truth
+                y_true_np = (y_true * 255).astype(np.uint8)
+                
+                # Instance prediction
+                instance_pred = torch.squeeze(y['instance_seg_logits'].to('cpu')).numpy()
+                if instance_pred.ndim == 3:
+                    instance_pred_np = (instance_pred.transpose(1, 2, 0) * 255).astype(np.uint8)
+                else:
+                    instance_pred_np = (instance_pred * 255).astype(np.uint8)
+                
+                # Save images
+                cv2.imwrite(os.path.join(save_dir, f'input_{batch_idx:04d}.jpg'), input_img_np)
+                cv2.imwrite(os.path.join(save_dir, f'pred_binary_{batch_idx:04d}.jpg'), binary_pred_np)
+                cv2.imwrite(os.path.join(save_dir, f'gt_binary_{batch_idx:04d}.jpg'), y_true_np)
+                cv2.imwrite(os.path.join(save_dir, f'pred_instance_{batch_idx:04d}.jpg'), instance_pred_np)
+                
+                if batch_idx == 0:
+                    print(f"Saving sample images to {save_dir}...")
     
     final_iou = iou / len(eval_dataloader.dataset)
     final_dice = dice / len(eval_dataloader.dataset)
