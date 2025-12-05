@@ -115,8 +115,12 @@ def reshape_sequence_input(stacked_tensor, sequence_length):
         sequence_length: Number of frames T
     
     Returns:
-        Reshaped tensor of shape [B, T, 3, H, W]
+        Reshaped tensor of shape [B, T, 3, H, W] (float type)
     """
+    # Ensure tensor is float
+    if not stacked_tensor.is_floating_point():
+        stacked_tensor = stacked_tensor.float()
+    
     B, C, H, W = stacked_tensor.shape
     # Reshape: [B, T*3, H, W] -> [B, T, 3, H, W]
     return stacked_tensor.view(B, sequence_length, 3, H, W)
@@ -234,6 +238,10 @@ def train_temporal_model(
             running_binary_loss_raw = 0.0
             
             for batch_idx, (images, masks) in enumerate(train_loader):
+                # Ensure images are float type
+                if not images.is_floating_point():
+                    images = images.float()
+                
                 # Reshape if needed: [B, T*3, H, W] -> [B, T, 3, H, W]
                 # The model can handle both formats, but we reshape here for consistency
                 if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
@@ -681,11 +689,19 @@ if __name__ == '__main__':
                 val_mask_paths.append(parts[1])  # Using binary mask path
     
     # Create SequenceDataset for temporal training
+    # Use augmentations for training, no augmentations for validation
+    # Default: enable augmentations for temporal training unless explicitly disabled
+    use_aug = getattr(args, 'use_augmentation', None)
+    if use_aug is None:
+        use_aug = True  # Default to True for temporal training
+    
     train_dataset = SequenceDataset(
         train_image_paths, 
         train_mask_paths, 
         sequence_len=args.sequence_length,
-        target_size=(resize_width, resize_height)
+        target_size=(resize_width, resize_height),
+        use_augmentation=use_aug,  # Use argument or default to True
+        strong_augmentation=getattr(args, 'strong_augmentation', False)
     )
     train_loader = DataLoader(train_dataset, batch_size=args.bs, shuffle=True)
     
@@ -693,7 +709,8 @@ if __name__ == '__main__':
         val_image_paths,
         val_mask_paths,
         sequence_len=args.sequence_length,
-        target_size=(resize_width, resize_height)
+        target_size=(resize_width, resize_height),
+        use_augmentation=False  # No augmentations for validation
     )
     val_loader = DataLoader(val_dataset, batch_size=args.bs, shuffle=False)
     
