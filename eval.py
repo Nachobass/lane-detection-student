@@ -110,8 +110,27 @@ def evaluation():
             
             y = model(x)
             y_pred = torch.squeeze(y['binary_seg_pred'].to('cpu')).numpy()
-            y_true = torch.squeeze(target.to('cpu')).numpy()
-            Score = Eval_Score(y_pred, y_true)
+            
+            # Process ground truth mask - ensure it's binary
+            y_true = target.to('cpu')
+            if y_true.dim() > 2:
+                y_true = torch.squeeze(y_true)
+            
+            # Convert to numpy and ensure binary (0 or 1)
+            # SequenceDataset loads masks as normalized [0, 1], need to binarize
+            y_true_np = y_true.numpy()
+            
+            # Binarize: values > 0.5 become 1, else 0
+            # This handles both normalized masks [0, 1] and already binary masks
+            y_true_np = (y_true_np > 0.5).astype(np.float32)
+            
+            # Debug first batch
+            if batch_idx == 0:
+                print(f"Debug - y_pred shape: {y_pred.shape}, min: {y_pred.min()}, max: {y_pred.max()}, unique: {np.unique(y_pred)}")
+                print(f"Debug - y_true shape: {y_true_np.shape}, min: {y_true_np.min()}, max: {y_true_np.max()}, unique: {np.unique(y_true_np)}")
+                print(f"Debug - y_true sum (non-zero pixels): {y_true_np.sum()}")
+            
+            Score = Eval_Score(y_pred, y_true_np)
             dice += Score.Dice()
             iou += Score.IoU()
             
@@ -137,8 +156,8 @@ def evaluation():
                 # Binary prediction (already 0 or 1)
                 binary_pred_np = (y_pred * 255).astype(np.uint8)
                 
-                # Ground truth
-                y_true_np = (y_true * 255).astype(np.uint8)
+                # Ground truth (use the binarized version)
+                y_true_np_save = (y_true_np * 255).astype(np.uint8)
                 
                 # Instance prediction
                 instance_pred = torch.squeeze(y['instance_seg_logits'].to('cpu')).numpy()
@@ -150,7 +169,7 @@ def evaluation():
                 # Save images
                 cv2.imwrite(os.path.join(save_dir, f'input_{batch_idx:04d}.jpg'), input_img_np)
                 cv2.imwrite(os.path.join(save_dir, f'pred_binary_{batch_idx:04d}.jpg'), binary_pred_np)
-                cv2.imwrite(os.path.join(save_dir, f'gt_binary_{batch_idx:04d}.jpg'), y_true_np)
+                cv2.imwrite(os.path.join(save_dir, f'gt_binary_{batch_idx:04d}.jpg'), y_true_np_save)
                 cv2.imwrite(os.path.join(save_dir, f'pred_instance_{batch_idx:04d}.jpg'), instance_pred_np)
                 
                 if batch_idx == 0:
