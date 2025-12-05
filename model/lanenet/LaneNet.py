@@ -101,18 +101,17 @@ class LaneNet(nn.Module):
                 encoded_frames = []
                 for t in range(T):
                     frame = input_tensor[:, t]  # [B, 3, H, W]
-                    # Ensure frame requires grad (should already be True, but just in case)
-                    if frame.requires_grad is False:
-                        frame = frame.requires_grad_(True)
+                    # Ensure frame is float type (required for gradients)
+                    if not frame.is_floating_point():
+                        frame = frame.float()
+                    # Ensure frame is on correct device
+                    if frame.device != input_tensor.device:
+                        frame = frame.to(input_tensor.device)
                     # Process through encoder - activations will have gradients even if encoder params don't
                     encoded = self._encoder(frame)  # [B, 128, H/8, W/8]
-                    # Ensure encoded activations require grad
-                    if not encoded.requires_grad:
-                        encoded = encoded.requires_grad_(True)
                     encoded_frames.append(encoded)
                 
                 # Stack encoded frames: [B, T, 128, H/8, W/8]
-                # This should preserve gradients
                 encoded_sequence = torch.stack(encoded_frames, dim=1)
                 
                 # Process through ConvLSTM
