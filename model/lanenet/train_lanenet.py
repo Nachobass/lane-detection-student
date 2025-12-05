@@ -38,7 +38,8 @@ def compute_loss(net_output, binary_label, instance_label, loss_type='FocalLoss'
     #   - Higher values (10-20) force model to focus more on detecting lane pixels
     #   - Current: 10 (already quite high)
     #   - If model struggles with lane detection, try increasing to 15-20
-    k_binary = 20  # Try 15-20 if lanes are not being detected well
+    # k_binary = 20  # Try 15-20 if lanes are not being detected well
+    k_binary = 15
     
     # k_instance: Weight for instance segmentation loss (separating different lanes)
     #   - Lower values (0.3-0.5) are typical
@@ -363,11 +364,19 @@ def train_temporal_model(
     # Create new optimizer with all parameters
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=lr_phase2)
+    
+    # Add learning rate scheduler for phase 2 (reduce LR when plateau)
+    scheduler = lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=3, verbose=True, min_lr=1e-6
+    )
+    
     print(f"Training {sum(p.numel() for p in trainable_params)} parameters")
+    print(f"Using ReduceLROnPlateau scheduler (factor=0.5, patience=3)")
     
     # Load best model from phase 1
     model.load_state_dict(best_model_wts)
     best_loss = float("inf")
+    best_iou = 0.0  # Track best IoU for early stopping
     
     # Training loop Phase 2
     for epoch in range(num_epochs_phase2):
@@ -447,19 +456,25 @@ def train_temporal_model(
         val_loss = val_loss / len(val_loader.dataset)
         val_iou = val_iou / len(val_loader.dataset)
         
+        # Update learning rate scheduler
+        scheduler.step(val_loss)
+        
         # Show weighted and unweighted losses for better understanding
         binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
+        current_lr = optimizer.param_groups[0]['lr']
         print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_raw_avg:.4f}], Instance: {instance_loss:.4f})')
-        print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%)')
+        print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%), LR: {current_lr:.6f}')
         
         training_log['training_loss'].append(epoch_loss)
         training_log['val_loss'].append(val_loss)
         training_log['val_iou'].append(val_iou)
         
-        # Save checkpoint
-        if val_loss < best_loss:
+        # Save checkpoint based on IoU (better metric than loss for segmentation)
+        if val_iou > best_iou:
+            best_iou = val_iou
             best_loss = val_loss
             best_model_wts = copy.deepcopy(model.state_dict())
+            print(f'  -> New best IoU: {best_iou:.4f} ({best_iou*100:.2f}%)')
         
         # Save periodic checkpoints
         if (epoch + 1) % 5 == 0 or epoch == num_epochs_phase2 - 1:
