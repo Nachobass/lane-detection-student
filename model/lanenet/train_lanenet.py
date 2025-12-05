@@ -193,7 +193,8 @@ def train_temporal_model(
     # ============================================================
     # PHASE 1: Train only ConvLSTM (encoder frozen)
     # ============================================================
-    if freeze_encoder:
+    checkpoint_path = None  # Initialize to avoid UnboundLocalError
+    if freeze_encoder and num_epochs_phase1 > 0:
         print("\n" + "="*60)
         print("PHASE 1: Training ConvLSTM with frozen encoder")
         print("="*60)
@@ -361,7 +362,13 @@ def train_temporal_model(
             torch.save(model.state_dict(), checkpoint_path)
         
         print(f"\nPhase 1 complete. Best val loss: {best_loss:.4f}")
-        print(f"Checkpoint saved: {checkpoint_path}")
+        if checkpoint_path:
+            print(f"Checkpoint saved: {checkpoint_path}")
+    elif num_epochs_phase1 == 0:
+        print("\n" + "="*60)
+        print("PHASE 1: Skipped (num_epochs_phase1=0)")
+        print("="*60)
+        print("Proceeding directly to Phase 2...")
     
     # ============================================================
     # PHASE 2: Fine-tune entire network
