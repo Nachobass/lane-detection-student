@@ -133,7 +133,8 @@ def train_temporal_model(
     freeze_encoder=True,
     save_dir='./log',
     lr_phase1=1e-3,
-    lr_phase2=1e-4
+    lr_phase2=1e-4,
+    pretrained_path=None
 ):
     """
     Train LaneNet with temporal support in two phases
@@ -153,6 +154,7 @@ def train_temporal_model(
         save_dir: Directory to save checkpoints
         lr_phase1: Learning rate for phase 1
         lr_phase2: Learning rate for phase 2
+        pretrained_path: Path to pretrained model checkpoint (optional)
     
     Returns:
         Tuple of (trained_model, training_log)
@@ -169,6 +171,24 @@ def train_temporal_model(
     best_model_wts = copy.deepcopy(model.state_dict())
     
     os.makedirs(save_dir, exist_ok=True)
+    
+    # Load pretrained model if provided
+    if pretrained_path and os.path.exists(pretrained_path):
+        print(f"\nLoading pretrained model from: {pretrained_path}")
+        try:
+            checkpoint = torch.load(pretrained_path, map_location=device)
+            model.load_state_dict(checkpoint)
+            best_model_wts = copy.deepcopy(model.state_dict())
+            print("Pretrained model loaded successfully!")
+            
+            # If loading from a checkpoint, you might want to skip phase 1
+            # This is handled by setting num_epochs_phase1=0 if needed
+        except Exception as e:
+            print(f"Warning: Could not load pretrained model: {e}")
+            print("Starting training from scratch...")
+    elif pretrained_path:
+        print(f"Warning: Pretrained model path not found: {pretrained_path}")
+        print("Starting training from scratch...")
     
     # ============================================================
     # PHASE 1: Train only ConvLSTM (encoder frozen)
@@ -672,6 +692,10 @@ if __name__ == '__main__':
     
     print(f"Temporal training enabled with sequence length: {args.sequence_length}")
     print(f"Phase 1: {args.num_epochs_phase1} epochs, Phase 2: {args.num_epochs_phase2} epochs")
+    if args.pretrained:
+        print(f"Will load pretrained model from: {args.pretrained}")
+        if args.num_epochs_phase1 == 0:
+            print("Note: Phase 1 skipped (num_epochs_phase1=0), will only fine-tune in Phase 2")
     print(f"{len(train_dataset)} training samples\n")
     
     # Use temporal training function
@@ -686,7 +710,8 @@ if __name__ == '__main__':
         freeze_encoder=args.freeze_encoder,
         save_dir=save_path,
         lr_phase1=args.lr,
-        lr_phase2=args.lr * 0.1  # Lower learning rate for phase 2
+        lr_phase2=args.lr * 0.1,  # Lower learning rate for phase 2
+        pretrained_path=args.pretrained
     )
     
     # Create DataFrame with temporal training log
