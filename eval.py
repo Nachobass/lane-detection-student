@@ -38,7 +38,8 @@ def evaluation():
         Rescale((resize_width, resize_height)),
     ])
 
-    dataset_file = os.path.join(args.dataset, 'test.txt')
+    # dataset_file = os.path.join(args.dataset, 'test.txt')
+    dataset_file = os.path.join(args.dataset, 'val.txt')
     
     # Check if temporal mode is enabled
     if args.use_temporal:
