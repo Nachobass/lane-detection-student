@@ -394,7 +394,7 @@ def train_temporal_model(
     
     # Add learning rate scheduler for phase 2 (reduce LR when plateau)
     scheduler = lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3, verbose=True, min_lr=1e-6
+        optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-6
     )
     
     print(f"Training {sum(p.numel() for p in trainable_params)} parameters")
@@ -484,7 +484,11 @@ def train_temporal_model(
         val_iou = val_iou / len(val_loader.dataset)
         
         # Update learning rate scheduler
+        old_lr = optimizer.param_groups[0]['lr']
         scheduler.step(val_loss)
+        new_lr = optimizer.param_groups[0]['lr']
+        if new_lr < old_lr:
+            print(f'  -> Learning rate reduced: {old_lr:.6f} -> {new_lr:.6f}')
         
         # Show weighted and unweighted losses for better understanding
         binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
