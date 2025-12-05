@@ -43,14 +43,22 @@ def evaluation():
     # Check if temporal mode is enabled
     if args.use_temporal:
         # Load image and mask paths from test.txt for SequenceDataset
+        # Format: image_path binary_mask_path instance_mask_path
         test_image_paths = []
         test_mask_paths = []
         with open(dataset_file, 'r') as f:
-            for line in f:
+            for line_idx, line in enumerate(f):
                 parts = line.strip().split()
                 if len(parts) >= 2:
                     test_image_paths.append(parts[0])
                     test_mask_paths.append(parts[1])  # Using binary mask path
+                    # Debug first few paths
+                    if line_idx < 3:
+                        print(f"Debug - Line {line_idx}: image={parts[0]}, mask={parts[1]}")
+                        if os.path.exists(parts[1]):
+                            print(f"  Mask file exists: {parts[1]}")
+                        else:
+                            print(f"  WARNING: Mask file NOT found: {parts[1]}")
         
         # Create SequenceDataset for temporal evaluation
         Eval_Dataset = SequenceDataset(
