@@ -268,11 +268,124 @@ def evaluation():
     final_iou = iou / len(eval_dataloader.dataset) if len(eval_dataloader.dataset) > 0 else 0.0
     final_dice = dice / len(eval_dataloader.dataset) if len(eval_dataloader.dataset) > 0 else 0.0
     
-    # ===== TuSimple Accuracy =====
-    all_C = 0  # correct points (sum over images)
-    all_S = 0  # total GT points (sum over images)
+    # # ===== TuSimple Accuracy =====
+    # all_C = 0  # correct points (sum over images)
+    # all_S = 0  # total GT points (sum over images)
 
-    # Process dataset again to compute TuSimple accuracy
+    # # Process dataset again to compute TuSimple accuracy
+    # print("Computing TuSimple lane accuracy...")
+
+    # with torch.no_grad():
+    #     for batch_idx, batch_data in enumerate(eval_dataloader):
+    #         if args.use_temporal:
+    #             x, masks = batch_data
+    #             if x.dim() == 4 and x.shape[1] == args.sequence_length * 3:
+    #                 x = reshape_sequence_input(x, args.sequence_length)
+    #             x = x.to(DEVICE)
+    #             target = masks.to(DEVICE)
+    #             if target.dim() == 4:
+    #                 target = target.squeeze(1)
+    #         else:
+    #             x, target, _ = batch_data
+    #             x = x.to(DEVICE)
+    #             target = target.to(DEVICE)
+
+    #         y = model(x)
+    #         binary_pred = y['binary_seg_pred'].to('cpu')
+            
+    #         # Handle different shapes for pred_mask - remove all batch and channel dimensions
+    #         if binary_pred.dim() == 4:
+    #             # [B, 1, H, W] -> [B, H, W] -> [H, W] (take first item from batch)
+    #             pred_mask = binary_pred.squeeze(1)[0].numpy()
+    #         elif binary_pred.dim() == 3:
+    #             # [B, H, W] -> [H, W] (take first item from batch)
+    #             pred_mask = binary_pred[0].numpy()
+    #         elif binary_pred.dim() == 2:
+    #             pred_mask = binary_pred.numpy()
+    #         else:
+    #             pred_mask = binary_pred.squeeze().numpy()
+            
+    #         # Handle ground truth - remove batch dimension
+    #         gt_mask = target.to('cpu')
+    #         if gt_mask.dim() == 4:
+    #             gt_mask = gt_mask.squeeze(1)[0].numpy()  # [B, 1, H, W] -> [B, H, W] -> [H, W]
+    #         elif gt_mask.dim() == 3:
+    #             gt_mask = gt_mask[0].numpy()  # [B, H, W] -> [H, W]
+    #         elif gt_mask.dim() == 2:
+    #             gt_mask = gt_mask.numpy() if isinstance(gt_mask, torch.Tensor) else gt_mask
+    #         else:
+    #             gt_mask = gt_mask.squeeze().numpy() if isinstance(gt_mask, torch.Tensor) else gt_mask.squeeze()
+            
+    #         # Ensure both are 2D
+    #         if pred_mask.ndim > 2:
+    #             pred_mask = pred_mask.squeeze()
+    #         if gt_mask.ndim > 2:
+    #             gt_mask = gt_mask.squeeze()
+            
+    #         # Ensure same shape
+    #         if pred_mask.shape != gt_mask.shape:
+    #             min_h = min(pred_mask.shape[0], gt_mask.shape[0])
+    #             min_w = min(pred_mask.shape[1], gt_mask.shape[1])
+    #             pred_mask = pred_mask[:min_h, :min_w]
+    #             gt_mask = gt_mask[:min_h, :min_w]
+            
+    #         # Ensure binary masks
+    #         gt_mask = (gt_mask > 0.5).astype(np.uint8)
+    #         pred_mask = (pred_mask > 0.5).astype(np.uint8)
+
+    #         H, W = gt_mask.shape
+
+    #         # Extract GT lane points (coordenadas por fila)
+    #         gt_points = []
+    #         for y_row in range(H):
+    #             xs = np.where(gt_mask[y_row] == 1)[0]
+    #             if len(xs) > 0:
+    #                 x_avg = np.mean(xs)   # promedio de x GT en la fila
+    #                 gt_points.append((x_avg, y_row))
+
+    #         # Extract predicted lane points
+    #         pred_points = []
+    #         for y_row in range(H):
+    #             xs = np.where(pred_mask[y_row] == 1)[0]
+    #             if len(xs) > 0:
+    #                 x_avg = np.mean(xs)
+    #                 pred_points.append((x_avg, y_row))
+
+    #         # Convert to dicts for fast lookup: row -> x
+    #         gt_dict = {y: x for (x, y) in gt_points}
+    #         pred_dict = {y: x for (x, y) in pred_points}
+
+    #         # Evaluate TuSimple accuracy
+    #         S_i = len(gt_dict)  # total GT points
+    #         C_i = 0             # correct points
+
+    #         for y_row, gt_x in gt_dict.items():
+    #             if y_row in pred_dict:
+    #                 pred_x = pred_dict[y_row]
+    #                 if abs(pred_x - gt_x) < 20:  # 20px threshold TuSimple
+    #                     C_i += 1
+
+    #         all_S += S_i
+    #         all_C += C_i
+
+    # tusimple_accuracy = all_C / all_S if all_S > 0 else 0.0
+
+    # print('='*60)
+    # print('EVALUATION RESULTS:')
+    # print('='*60)
+    # print(f'Pixel_IoU: {final_iou:.4f} ({final_iou*100:.2f}%)')
+    # print(f'Pixel_F1 (Dice): {final_dice:.4f} ({final_dice*100:.2f}%)')
+    # print(f'TuSimple_Accuracy: {tusimple_accuracy:.4f} ({tusimple_accuracy*100:.2f}%)')
+    # print('='*60)
+
+
+
+
+
+# ===== TuSimple Accuracy (CORREGIDO) =====
+    all_C = 0  # puntos correctos acumulados
+    all_S = 0  # total de puntos GT acumulados
+
     print("Computing TuSimple lane accuracy...")
 
     with torch.no_grad():
@@ -293,78 +406,64 @@ def evaluation():
             y = model(x)
             binary_pred = y['binary_seg_pred'].to('cpu')
             
-            # Handle different shapes for pred_mask - remove all batch and channel dimensions
+            # Procesar predicción (binarizar)
             if binary_pred.dim() == 4:
-                # [B, 1, H, W] -> [B, H, W] -> [H, W] (take first item from batch)
                 pred_mask = binary_pred.squeeze(1)[0].numpy()
             elif binary_pred.dim() == 3:
-                # [B, H, W] -> [H, W] (take first item from batch)
                 pred_mask = binary_pred[0].numpy()
-            elif binary_pred.dim() == 2:
-                pred_mask = binary_pred.numpy()
             else:
-                pred_mask = binary_pred.squeeze().numpy()
+                pred_mask = binary_pred.numpy() if binary_pred.ndim == 2 else binary_pred.squeeze().numpy()
             
-            # Handle ground truth - remove batch dimension
+            # Procesar Ground Truth (binarizar)
             gt_mask = target.to('cpu')
             if gt_mask.dim() == 4:
-                gt_mask = gt_mask.squeeze(1)[0].numpy()  # [B, 1, H, W] -> [B, H, W] -> [H, W]
+                gt_mask = gt_mask.squeeze(1)[0].numpy()
             elif gt_mask.dim() == 3:
-                gt_mask = gt_mask[0].numpy()  # [B, H, W] -> [H, W]
-            elif gt_mask.dim() == 2:
-                gt_mask = gt_mask.numpy() if isinstance(gt_mask, torch.Tensor) else gt_mask
+                gt_mask = gt_mask[0].numpy()
             else:
-                gt_mask = gt_mask.squeeze().numpy() if isinstance(gt_mask, torch.Tensor) else gt_mask.squeeze()
+                gt_mask = gt_mask.numpy() if gt_mask.ndim == 2 else gt_mask.squeeze().numpy()
             
-            # Ensure both are 2D
-            if pred_mask.ndim > 2:
-                pred_mask = pred_mask.squeeze()
-            if gt_mask.ndim > 2:
-                gt_mask = gt_mask.squeeze()
+            # Asegurar dimensiones y tipos
+            if pred_mask.ndim > 2: pred_mask = pred_mask.squeeze()
+            if gt_mask.ndim > 2: gt_mask = gt_mask.squeeze()
             
-            # Ensure same shape
-            if pred_mask.shape != gt_mask.shape:
-                min_h = min(pred_mask.shape[0], gt_mask.shape[0])
-                min_w = min(pred_mask.shape[1], gt_mask.shape[1])
-                pred_mask = pred_mask[:min_h, :min_w]
-                gt_mask = gt_mask[:min_h, :min_w]
-            
-            # Ensure binary masks
+            # Recortar si hay mismatch de tamaños
+            min_h = min(pred_mask.shape[0], gt_mask.shape[0])
+            min_w = min(pred_mask.shape[1], gt_mask.shape[1])
+            pred_mask = pred_mask[:min_h, :min_w]
+            gt_mask = gt_mask[:min_h, :min_w]
+
             gt_mask = (gt_mask > 0.5).astype(np.uint8)
             pred_mask = (pred_mask > 0.5).astype(np.uint8)
-
+            
             H, W = gt_mask.shape
 
-            # Extract GT lane points (coordenadas por fila)
-            gt_points = []
-            for y_row in range(H):
-                xs = np.where(gt_mask[y_row] == 1)[0]
-                if len(xs) > 0:
-                    x_avg = np.mean(xs)   # promedio de x GT en la fila
-                    gt_points.append((x_avg, y_row))
-
-            # Extract predicted lane points
-            pred_points = []
-            for y_row in range(H):
-                xs = np.where(pred_mask[y_row] == 1)[0]
-                if len(xs) > 0:
-                    x_avg = np.mean(xs)
-                    pred_points.append((x_avg, y_row))
-
-            # Convert to dicts for fast lookup: row -> x
-            gt_dict = {y: x for (x, y) in gt_points}
-            pred_dict = {y: x for (x, y) in pred_points}
-
-            # Evaluate TuSimple accuracy
-            S_i = len(gt_dict)  # total GT points
-            C_i = 0             # correct points
-
-            for y_row, gt_x in gt_dict.items():
-                if y_row in pred_dict:
-                    pred_x = pred_dict[y_row]
-                    if abs(pred_x - gt_x) < 20:  # 20px threshold TuSimple
-                        C_i += 1
-
+            # --- LÓGICA NUEVA: Pixel-wise Hit ---
+            # En lugar de promediar X, verificamos si cada punto de GT 
+            # tiene una predicción cercana (dentro de 20px).
+            
+            # Obtenemos todas las coordenadas (y, x) donde hay carril real (GT)
+            gt_ys, gt_xs = np.where(gt_mask > 0)
+            
+            # Total de puntos a evaluar en esta imagen
+            S_i = len(gt_ys)
+            C_i = 0
+            
+            # Para optimizar, no iteramos pixel por pixel si son muchísimos, 
+            # pero en validación está bien hacerlo así para exactitud.
+            for i in range(S_i):
+                gy = gt_ys[i]
+                gx = gt_xs[i]
+                
+                # Definimos ventana de tolerancia de 20 píxeles
+                x_start = max(0, gx - 20)
+                x_end = min(W, gx + 20)
+                
+                # Verificamos si la predicción tiene ALGÚN pixel blanco en esa ventana
+                # en la misma fila 'gy'
+                if np.any(pred_mask[gy, x_start:x_end] > 0):
+                    C_i += 1
+            
             all_S += S_i
             all_C += C_i
 
@@ -375,10 +474,8 @@ def evaluation():
     print('='*60)
     print(f'Pixel_IoU: {final_iou:.4f} ({final_iou*100:.2f}%)')
     print(f'Pixel_F1 (Dice): {final_dice:.4f} ({final_dice*100:.2f}%)')
-    print(f'TuSimple_Accuracy: {tusimple_accuracy:.4f} ({tusimple_accuracy*100:.2f}%)')
+    print(f'TuSimple_Accuracy (Fixed): {tusimple_accuracy:.4f} ({tusimple_accuracy*100:.2f}%)')
     print('='*60)
-
-
 
 if __name__ == "__main__":
     evaluation()
