@@ -125,6 +125,134 @@ def reshape_sequence_input(stacked_tensor, sequence_length):
     # Reshape: [B, T*3, H, W] -> [B, T, 3, H, W]
     return stacked_tensor.view(B, sequence_length, 3, H, W)
 
+def load_weights_robust(model, checkpoint_path, device):
+    """
+    Carga pesos tolerando cambios en la arquitectura (CoordinateConv, diferentes números de canales)
+    """
+    print(f"Loading weights robustly from {checkpoint_path}...")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    # Handle different checkpoint formats
+    if isinstance(checkpoint, dict):
+        if 'state_dict' in checkpoint:
+            checkpoint = checkpoint['state_dict']
+        elif 'model_state_dict' in checkpoint:
+            checkpoint = checkpoint['model_state_dict']
+    
+    model_dict = model.state_dict()
+    
+    # Filter weights that match or can be adapted
+    pretrained_dict = {}
+    skipped_keys = []
+    
+    for k, v in checkpoint.items():
+        if k in model_dict:
+            if model_dict[k].shape == v.shape:
+                # Exact match: use as is
+                pretrained_dict[k] = v
+            else:
+                # Shape mismatch: try to adapt
+                print(f"Adapting layer {k}: Checkpoint {v.shape} -> Model {model_dict[k].shape}")
+                
+                # Handle 4D conv/linear layers (weight tensors)
+                if len(v.shape) == 4 and len(model_dict[k].shape) == 4:
+                    # Conv2d weight: [out_channels, in_channels, kernel_h, kernel_w]
+                    ckpt_out, ckpt_in = v.shape[0], v.shape[1]
+                    model_out, model_in = model_dict[k].shape[0], model_dict[k].shape[1]
+                    
+                    # Case 1: Checkpoint has fewer input channels (e.g., 3 -> 5 with CoordinateConv)
+                    if ckpt_in < model_in and ckpt_out == model_out:
+                        new_channels = model_in - ckpt_in
+                        # Initialize new channels with small random values (better than zeros)
+                        extra_weights = torch.randn(
+                            ckpt_out, new_channels, v.shape[2], v.shape[3]
+                        ).to(v.device) * 0.01  # Small initialization
+                        combined_weights = torch.cat((v, extra_weights), dim=1)
+                        pretrained_dict[k] = combined_weights
+                        print(f"  Added {new_channels} new input channels (likely CoordinateConv)")
+                    
+                    # Case 2: Checkpoint has more input channels (shouldn't happen, but handle it)
+                    elif ckpt_in > model_in and ckpt_out == model_out:
+                        # Take only the first N channels
+                        pretrained_dict[k] = v[:, :model_in, :, :]
+                        print(f"  Truncated input channels from {ckpt_in} to {model_in}")
+                    
+                    # Case 3: Checkpoint has different output channels
+                    elif ckpt_out != model_out:
+                        # Take matching output channels if possible
+                        min_out = min(ckpt_out, model_out)
+                        if ckpt_in == model_in:
+                            # Same input channels, different output: take first N outputs
+                            pretrained_dict[k] = v[:min_out, :, :, :]
+                            # Initialize remaining output channels if needed
+                            if model_out > ckpt_out:
+                                remaining = model_dict[k][ckpt_out:, :, :, :]
+                                pretrained_dict[k] = torch.cat((pretrained_dict[k], remaining), dim=0)
+                            print(f"  Adapted output channels from {ckpt_out} to {model_out}")
+                        elif ckpt_in < model_in:
+                            # Different input AND output channels
+                            # First, take matching output channels and add input channels
+                            matching_outputs = v[:min_out, :, :, :]  # [min_out, ckpt_in, H, W]
+                            # Add new input channels for CoordinateConv
+                            new_in_channels = model_in - ckpt_in
+                            extra_input_weights = torch.randn(
+                                min_out, new_in_channels, v.shape[2], v.shape[3]
+                            ).to(v.device) * 0.01
+                            combined = torch.cat((matching_outputs, extra_input_weights), dim=1)  # [min_out, model_in, H, W]
+                            # If model needs more output channels, initialize them
+                            if model_out > ckpt_out:
+                                remaining_outputs = model_dict[k][ckpt_out:, :, :, :]
+                                pretrained_dict[k] = torch.cat((combined, remaining_outputs), dim=0)
+                            else:
+                                pretrained_dict[k] = combined
+                            print(f"  Adapted both: output {ckpt_out}->{model_out}, input {ckpt_in}->{model_in}")
+                        else:
+                            # ckpt_in > model_in: truncate input channels and handle output
+                            truncated = v[:min_out, :model_in, :, :]
+                            if model_out > ckpt_out:
+                                remaining = model_dict[k][ckpt_out:, :, :, :]
+                                pretrained_dict[k] = torch.cat((truncated, remaining), dim=0)
+                            else:
+                                pretrained_dict[k] = truncated
+                            print(f"  Adapted: output {ckpt_out}->{model_out}, truncated input {ckpt_in}->{model_in}")
+                    else:
+                        print(f"  Skipping: other shape mismatch")
+                        skipped_keys.append(k)
+                
+                # Handle 1D bias/BN parameters
+                elif len(v.shape) == 1 and len(model_dict[k].shape) == 1:
+                    if v.shape[0] < model_dict[k].shape[0]:
+                        # Extend with zeros (for bias) or ones (for BN weight)
+                        if 'bias' in k or 'running_mean' in k or 'running_var' in k:
+                            extra = torch.zeros(model_dict[k].shape[0] - v.shape[0]).to(v.device)
+                        else:  # BN weight
+                            extra = torch.ones(model_dict[k].shape[0] - v.shape[0]).to(v.device)
+                        pretrained_dict[k] = torch.cat((v, extra), dim=0)
+                        print(f"  Extended 1D parameter from {v.shape[0]} to {model_dict[k].shape[0]}")
+                    elif v.shape[0] > model_dict[k].shape[0]:
+                        # Truncate
+                        pretrained_dict[k] = v[:model_dict[k].shape[0]]
+                        print(f"  Truncated 1D parameter from {v.shape[0]} to {model_dict[k].shape[0]}")
+                    else:
+                        skipped_keys.append(k)
+                else:
+                    print(f"  Skipping: incompatible shape mismatch")
+                    skipped_keys.append(k)
+        else:
+            print(f"Key {k} not found in model (skipping)")
+    
+    # Update model state dict
+    model_dict.update(pretrained_dict)
+    missing_keys, unexpected_keys = model.load_state_dict(model_dict, strict=False)
+    
+    if skipped_keys:
+        print(f"\nWarning: {len(skipped_keys)} layers were skipped due to incompatible shapes")
+    if missing_keys:
+        print(f"\nWarning: {len(missing_keys)} model layers were not found in checkpoint (will use random init)")
+    if unexpected_keys:
+        print(f"\nInfo: {len(unexpected_keys)} checkpoint layers were not used")
+    
+    print("Weights loaded successfully with layer adaptation.")
 
 def train_temporal_model(
     model,
@@ -181,7 +309,8 @@ def train_temporal_model(
         print(f"\nLoading pretrained model from: {pretrained_path}")
         try:
             checkpoint = torch.load(pretrained_path, map_location=device)
-            model.load_state_dict(checkpoint)
+            if pretrained_path and os.path.exists(pretrained_path):
+                load_weights_robust(model, pretrained_path, device)
             best_model_wts = copy.deepcopy(model.state_dict())
             print("Pretrained model loaded successfully!")
             
