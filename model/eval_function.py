@@ -24,5 +24,8 @@ class Eval_Score():
     def Dice(self, eps=1):
         return np.clip(((2. * self.intersection) / (self.sum + eps)), 1e-5, 0.99999)
     
-    def IoU(self):
-        return self.intersection / self.union
+    def IoU(self, eps=1e-6):
+        # Avoid division by zero
+        if self.union == 0:
+            return 0.0
+        return self.intersection / (self.union + eps)

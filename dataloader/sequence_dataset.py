@@ -73,20 +73,37 @@ class SequenceDataset(Dataset):
         img = Image.open(p).convert("RGB")
         return img
     
-    def load_mask_pil(self, p):
-        """Load mask as PIL Image"""
-        m = Image.open(p).convert("L")
-        return m
-    
-    def load_img_numpy(self, p):
-        """Load image as numpy array for Albumentations"""
-        img = Image.open(p).convert("RGB")
-        return np.array(img)
-    
-    def load_mask_numpy(self, p):
-        """Load mask as numpy array for Albumentations"""
-        m = Image.open(p).convert("L")
-        return np.array(m)
+    def load_mask(self, p):
+        """
+        Load binary mask - handles both grayscale and RGB mask images
+        Similar to how TusimpleSet processes masks
+        """
+        import cv2
+        import numpy as np
+        
+        # Try loading as RGB first (like TusimpleSet does)
+        label_img = cv2.imread(p, cv2.IMREAD_COLOR)
+        if label_img is None:
+            # Fallback to PIL if cv2 fails
+            m = Image.open(p).convert("L")
+            m = m.resize(self.size)
+            mask_tensor = TF.to_tensor(m)
+            # Binarize: values > 0.5 become 1, else 0
+            mask_tensor = (mask_tensor > 0.5).float()
+            return mask_tensor
+        
+        # Resize to target size
+        label_img = cv2.resize(label_img, self.size)
+        
+        # Convert to binary mask (same logic as TusimpleSet)
+        # Pixels that are not [0, 0, 0] (black) become 1, else 0
+        label_binary = np.zeros([label_img.shape[0], label_img.shape[1]], dtype=np.float32)
+        mask = np.where((label_img[:, :, :] != [0, 0, 0]).all(axis=2))
+        label_binary[mask] = 1.0
+        
+        # Convert to tensor [1, H, W] to match expected format
+        mask_tensor = torch.from_numpy(label_binary).unsqueeze(0)
+        return mask_tensor
 
     def __getitem__(self, idx):
         """
