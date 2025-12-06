@@ -38,8 +38,7 @@ def compute_loss(net_output, binary_label, instance_label, loss_type='FocalLoss'
     #   - Higher values (10-20) force model to focus more on detecting lane pixels
     #   - Current: 10 (already quite high)
     #   - If model struggles with lane detection, try increasing to 15-20
-    # k_binary = 20  # Try 15-20 if lanes are not being detected well
-    k_binary = 15
+    k_binary = 20  # Try 15-20 if lanes are not being detected well
     
     # k_instance: Weight for instance segmentation loss (separating different lanes)
     #   - Lower values (0.3-0.5) are typical
@@ -125,134 +124,6 @@ def reshape_sequence_input(stacked_tensor, sequence_length):
     # Reshape: [B, T*3, H, W] -> [B, T, 3, H, W]
     return stacked_tensor.view(B, sequence_length, 3, H, W)
 
-# def load_weights_robust(model, checkpoint_path, device):
-#     """
-#     Carga pesos tolerando cambios en la arquitectura (CoordinateConv, diferentes números de canales)
-#     """
-#     print(f"Loading weights robustly from {checkpoint_path}...")
-#     checkpoint = torch.load(checkpoint_path, map_location=device)
-    
-#     # Handle different checkpoint formats
-#     if isinstance(checkpoint, dict):
-#         if 'state_dict' in checkpoint:
-#             checkpoint = checkpoint['state_dict']
-#         elif 'model_state_dict' in checkpoint:
-#             checkpoint = checkpoint['model_state_dict']
-    
-#     model_dict = model.state_dict()
-    
-#     # Filter weights that match or can be adapted
-#     pretrained_dict = {}
-#     skipped_keys = []
-    
-#     for k, v in checkpoint.items():
-#         if k in model_dict:
-#             if model_dict[k].shape == v.shape:
-#                 # Exact match: use as is
-#                 pretrained_dict[k] = v
-#             else:
-#                 # Shape mismatch: try to adapt
-#                 print(f"Adapting layer {k}: Checkpoint {v.shape} -> Model {model_dict[k].shape}")
-                
-#                 # Handle 4D conv/linear layers (weight tensors)
-#                 if len(v.shape) == 4 and len(model_dict[k].shape) == 4:
-#                     # Conv2d weight: [out_channels, in_channels, kernel_h, kernel_w]
-#                     ckpt_out, ckpt_in = v.shape[0], v.shape[1]
-#                     model_out, model_in = model_dict[k].shape[0], model_dict[k].shape[1]
-                    
-#                     # Case 1: Checkpoint has fewer input channels (e.g., 3 -> 5 with CoordinateConv)
-#                     if ckpt_in < model_in and ckpt_out == model_out:
-#                         new_channels = model_in - ckpt_in
-#                         # Initialize new channels with small random values (better than zeros)
-#                         extra_weights = torch.randn(
-#                             ckpt_out, new_channels, v.shape[2], v.shape[3]
-#                         ).to(v.device) * 0.01  # Small initialization
-#                         combined_weights = torch.cat((v, extra_weights), dim=1)
-#                         pretrained_dict[k] = combined_weights
-#                         print(f"  Added {new_channels} new input channels (likely CoordinateConv)")
-                    
-#                     # Case 2: Checkpoint has more input channels (shouldn't happen, but handle it)
-#                     elif ckpt_in > model_in and ckpt_out == model_out:
-#                         # Take only the first N channels
-#                         pretrained_dict[k] = v[:, :model_in, :, :]
-#                         print(f"  Truncated input channels from {ckpt_in} to {model_in}")
-                    
-#                     # Case 3: Checkpoint has different output channels
-#                     elif ckpt_out != model_out:
-#                         # Take matching output channels if possible
-#                         min_out = min(ckpt_out, model_out)
-#                         if ckpt_in == model_in:
-#                             # Same input channels, different output: take first N outputs
-#                             pretrained_dict[k] = v[:min_out, :, :, :]
-#                             # Initialize remaining output channels if needed
-#                             if model_out > ckpt_out:
-#                                 remaining = model_dict[k][ckpt_out:, :, :, :]
-#                                 pretrained_dict[k] = torch.cat((pretrained_dict[k], remaining), dim=0)
-#                             print(f"  Adapted output channels from {ckpt_out} to {model_out}")
-#                         elif ckpt_in < model_in:
-#                             # Different input AND output channels
-#                             # First, take matching output channels and add input channels
-#                             matching_outputs = v[:min_out, :, :, :]  # [min_out, ckpt_in, H, W]
-#                             # Add new input channels for CoordinateConv
-#                             new_in_channels = model_in - ckpt_in
-#                             extra_input_weights = torch.randn(
-#                                 min_out, new_in_channels, v.shape[2], v.shape[3]
-#                             ).to(v.device) * 0.01
-#                             combined = torch.cat((matching_outputs, extra_input_weights), dim=1)  # [min_out, model_in, H, W]
-#                             # If model needs more output channels, initialize them
-#                             if model_out > ckpt_out:
-#                                 remaining_outputs = model_dict[k][ckpt_out:, :, :, :]
-#                                 pretrained_dict[k] = torch.cat((combined, remaining_outputs), dim=0)
-#                             else:
-#                                 pretrained_dict[k] = combined
-#                             print(f"  Adapted both: output {ckpt_out}->{model_out}, input {ckpt_in}->{model_in}")
-#                         else:
-#                             # ckpt_in > model_in: truncate input channels and handle output
-#                             truncated = v[:min_out, :model_in, :, :]
-#                             if model_out > ckpt_out:
-#                                 remaining = model_dict[k][ckpt_out:, :, :, :]
-#                                 pretrained_dict[k] = torch.cat((truncated, remaining), dim=0)
-#                             else:
-#                                 pretrained_dict[k] = truncated
-#                             print(f"  Adapted: output {ckpt_out}->{model_out}, truncated input {ckpt_in}->{model_in}")
-#                     else:
-#                         print(f"  Skipping: other shape mismatch")
-#                         skipped_keys.append(k)
-                
-#                 # Handle 1D bias/BN parameters
-#                 elif len(v.shape) == 1 and len(model_dict[k].shape) == 1:
-#                     if v.shape[0] < model_dict[k].shape[0]:
-#                         # Extend with zeros (for bias) or ones (for BN weight)
-#                         if 'bias' in k or 'running_mean' in k or 'running_var' in k:
-#                             extra = torch.zeros(model_dict[k].shape[0] - v.shape[0]).to(v.device)
-#                         else:  # BN weight
-#                             extra = torch.ones(model_dict[k].shape[0] - v.shape[0]).to(v.device)
-#                         pretrained_dict[k] = torch.cat((v, extra), dim=0)
-#                         print(f"  Extended 1D parameter from {v.shape[0]} to {model_dict[k].shape[0]}")
-#                     elif v.shape[0] > model_dict[k].shape[0]:
-#                         # Truncate
-#                         pretrained_dict[k] = v[:model_dict[k].shape[0]]
-#                         print(f"  Truncated 1D parameter from {v.shape[0]} to {model_dict[k].shape[0]}")
-#                     else:
-#                         skipped_keys.append(k)
-#                 else:
-#                     print(f"  Skipping: incompatible shape mismatch")
-#                     skipped_keys.append(k)
-#         else:
-#             print(f"Key {k} not found in model (skipping)")
-    
-#     # Update model state dict
-#     model_dict.update(pretrained_dict)
-#     missing_keys, unexpected_keys = model.load_state_dict(model_dict, strict=False)
-    
-#     if skipped_keys:
-#         print(f"\nWarning: {len(skipped_keys)} layers were skipped due to incompatible shapes")
-#     if missing_keys:
-#         print(f"\nWarning: {len(missing_keys)} model layers were not found in checkpoint (will use random init)")
-#     if unexpected_keys:
-#         print(f"\nInfo: {len(unexpected_keys)} checkpoint layers were not used")
-    
-#     print("Weights loaded successfully with layer adaptation.")
 
 def train_temporal_model(
     model,
@@ -265,8 +136,7 @@ def train_temporal_model(
     freeze_encoder=True,
     save_dir='./log',
     lr_phase1=1e-3,
-    lr_phase2=1e-4,
-    pretrained_path=None
+    lr_phase2=1e-4
 ):
     """
     Train LaneNet with temporal support in two phases
@@ -286,7 +156,6 @@ def train_temporal_model(
         save_dir: Directory to save checkpoints
         lr_phase1: Learning rate for phase 1
         lr_phase2: Learning rate for phase 2
-        pretrained_path: Path to pretrained model checkpoint (optional)
     
     Returns:
         Tuple of (trained_model, training_log)
@@ -304,30 +173,10 @@ def train_temporal_model(
     
     os.makedirs(save_dir, exist_ok=True)
     
-    # Load pretrained model if provided
-    if pretrained_path and os.path.exists(pretrained_path):
-        print(f"\nLoading pretrained model from: {pretrained_path}")
-        try:
-            checkpoint = torch.load(pretrained_path, map_location=device)
-            if pretrained_path and os.path.exists(pretrained_path):
-                load_weights_robust(model, pretrained_path, device)
-            best_model_wts = copy.deepcopy(model.state_dict())
-            print("Pretrained model loaded successfully!")
-            
-            # If loading from a checkpoint, you might want to skip phase 1
-            # This is handled by setting num_epochs_phase1=0 if needed
-        except Exception as e:
-            print(f"Warning: Could not load pretrained model: {e}")
-            print("Starting training from scratch...")
-    elif pretrained_path:
-        print(f"Warning: Pretrained model path not found: {pretrained_path}")
-        print("Starting training from scratch...")
-    
     # ============================================================
     # PHASE 1: Train only ConvLSTM (encoder frozen)
     # ============================================================
-    checkpoint_path = None  # Initialize to avoid UnboundLocalError
-    if freeze_encoder and num_epochs_phase1 > 0:
+    if freeze_encoder:
         print("\n" + "="*60)
         print("PHASE 1: Training ConvLSTM with frozen encoder")
         print("="*60)
@@ -499,13 +348,7 @@ def train_temporal_model(
             torch.save(model.state_dict(), checkpoint_path)
         
         print(f"\nPhase 1 complete. Best val loss: {best_loss:.4f}")
-        if checkpoint_path:
-            print(f"Checkpoint saved: {checkpoint_path}")
-    elif num_epochs_phase1 == 0:
-        print("\n" + "="*60)
-        print("PHASE 1: Skipped (num_epochs_phase1=0)")
-        print("="*60)
-        print("Proceeding directly to Phase 2...")
+        print(f"Checkpoint saved: {checkpoint_path}")
     
     # ============================================================
     # PHASE 2: Fine-tune entire network
@@ -528,19 +371,11 @@ def train_temporal_model(
     # Create new optimizer with all parameters
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=lr_phase2)
-    
-    # Add learning rate scheduler for phase 2 (reduce LR when plateau)
-    scheduler = lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-6
-    )
-    
     print(f"Training {sum(p.numel() for p in trainable_params)} parameters")
-    print(f"Using ReduceLROnPlateau scheduler (factor=0.5, patience=3)")
     
     # Load best model from phase 1
     model.load_state_dict(best_model_wts)
     best_loss = float("inf")
-    best_iou = 0.0  # Track best IoU for early stopping
     
     # Training loop Phase 2
     for epoch in range(num_epochs_phase2):
@@ -620,29 +455,19 @@ def train_temporal_model(
         val_loss = val_loss / len(val_loader.dataset)
         val_iou = val_iou / len(val_loader.dataset)
         
-        # Update learning rate scheduler
-        old_lr = optimizer.param_groups[0]['lr']
-        scheduler.step(val_loss)
-        new_lr = optimizer.param_groups[0]['lr']
-        if new_lr < old_lr:
-            print(f'  -> Learning rate reduced: {old_lr:.6f} -> {new_lr:.6f}')
-        
         # Show weighted and unweighted losses for better understanding
         binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
-        current_lr = optimizer.param_groups[0]['lr']
         print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_raw_avg:.4f}], Instance: {instance_loss:.4f})')
-        print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%), LR: {current_lr:.6f}')
+        print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%)')
         
         training_log['training_loss'].append(epoch_loss)
         training_log['val_loss'].append(val_loss)
         training_log['val_iou'].append(val_iou)
         
-        # Save checkpoint based on IoU (better metric than loss for segmentation)
-        if val_iou > best_iou:
-            best_iou = val_iou
+        # Save checkpoint
+        if val_loss < best_loss:
             best_loss = val_loss
             best_model_wts = copy.deepcopy(model.state_dict())
-            print(f'  -> New best IoU: {best_iou:.4f} ({best_iou*100:.2f}%)')
         
         # Save periodic checkpoints
         if (epoch + 1) % 5 == 0 or epoch == num_epochs_phase2 - 1:
@@ -849,10 +674,6 @@ if __name__ == '__main__':
     
     print(f"Temporal training enabled with sequence length: {args.sequence_length}")
     print(f"Phase 1: {args.num_epochs_phase1} epochs, Phase 2: {args.num_epochs_phase2} epochs")
-    if args.pretrained:
-        print(f"Will load pretrained model from: {args.pretrained}")
-        if args.num_epochs_phase1 == 0:
-            print("Note: Phase 1 skipped (num_epochs_phase1=0), will only fine-tune in Phase 2")
     print(f"{len(train_dataset)} training samples\n")
     
     # Use temporal training function
@@ -867,8 +688,7 @@ if __name__ == '__main__':
         freeze_encoder=args.freeze_encoder,
         save_dir=save_path,
         lr_phase1=args.lr,
-        lr_phase2=args.lr * 0.1,  # Lower learning rate for phase 2
-        pretrained_path=args.pretrained
+        lr_phase2=args.lr * 0.1  # Lower learning rate for phase 2
     )
     
     # Create DataFrame with temporal training log
