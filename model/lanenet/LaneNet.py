@@ -12,6 +12,7 @@ from model.lanenet.backbone.UNet import UNet_Encoder, UNet_Decoder
 from model.lanenet.backbone.ENet import ENet_Encoder, ENet_Decoder
 from model.lanenet.backbone.deeplabv3_plus.deeplabv3plus import Deeplabv3plus_Encoder, Deeplabv3plus_Decoder
 from model.lanenet.backbone.temporal_conv_lstm import ConvLSTM
+from model.utils.coord_conv import AddCoordinateChannels
 
 DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -27,8 +28,17 @@ class LaneNet(nn.Module):
         if use_temporal:
             print("Temporal mode enabled with sequence_length={}".format(sequence_length))
         self._arch = arch
+        
+        # Initialize CoordinateConv module to add coordinate channels
+        self.coord_adder = AddCoordinateChannels(with_r=False)
+        self.coord_adder.to(DEVICE)
+        print("CoordinateConv enabled: adding X, Y coordinate channels to input")
+        
+        # Calculate encoder input channels: original channels + 2 coordinate channels
+        encoder_in_ch = in_ch + 2
+        
         if self._arch == 'UNet':
-            self._encoder = UNet_Encoder(in_ch)
+            self._encoder = UNet_Encoder(encoder_in_ch)
             self._encoder.to(DEVICE)
 
             self._decoder_binary = UNet_Decoder(2)
@@ -36,7 +46,7 @@ class LaneNet(nn.Module):
             self._decoder_binary.to(DEVICE)
             self._decoder_instance.to(DEVICE)
         elif self._arch == 'ENet':
-            self._encoder = ENet_Encoder(in_ch)
+            self._encoder = ENet_Encoder(encoder_in_ch)
             self._encoder.to(DEVICE)
             
             # Freeze encoder when using temporal mode
@@ -61,8 +71,31 @@ class LaneNet(nn.Module):
             self._decoder_binary.to(DEVICE)
             self._decoder_instance.to(DEVICE)
         elif self._arch == 'DeepLabv3+':
+            # Note: DeepLabv3+ uses a pre-trained backbone (ResNet101) with fixed 3-channel input
+            # We apply CoordinateConv before the encoder, so the encoder will receive 5 channels
+            # This requires modifying the first conv layer of the backbone to accept 5 channels
+            # For now, we'll apply coord_adder but the encoder may need modification
             self._encoder = Deeplabv3plus_Encoder()
             self._encoder.to(DEVICE)
+            # Modify the first conv layer of the backbone to accept encoder_in_ch channels
+            if hasattr(self._encoder, 'backbone') and hasattr(self._encoder.backbone, 'conv1'):
+                # Replace the first conv layer to accept 5 channels instead of 3
+                old_conv1 = self._encoder.backbone.conv1
+                new_conv1 = nn.Conv2d(
+                    encoder_in_ch, 
+                    old_conv1.out_channels,
+                    kernel_size=old_conv1.kernel_size,
+                    stride=old_conv1.stride,
+                    padding=old_conv1.padding,
+                    bias=old_conv1.bias is not None
+                )
+                # Initialize new conv layer weights
+                # Copy weights from old conv for RGB channels, initialize new channels randomly
+                with torch.no_grad():
+                    new_conv1.weight[:, :3] = old_conv1.weight
+                    nn.init.kaiming_normal_(new_conv1.weight[:, 3:], mode='fan_out', nonlinearity='relu')
+                self._encoder.backbone.conv1 = new_conv1
+                print(f"Modified DeepLabv3+ backbone first conv layer to accept {encoder_in_ch} channels")
 
             self._decoder_binary = Deeplabv3plus_Decoder(2)
             self._decoder_instance = Deeplabv3plus_Decoder(self.no_of_instances)
@@ -76,6 +109,8 @@ class LaneNet(nn.Module):
 
     def forward(self, input_tensor):
         if self._arch == 'UNet':
+            # Add coordinate channels before encoding
+            input_tensor = self.coord_adder(input_tensor)
             c1, c2, c3, c4, c5 = self._encoder(input_tensor)
             binary = self._decoder_binary(c1, c2, c3, c4, c5)
             instance = self._decoder_instance(c1, c2, c3, c4, c5)
@@ -107,6 +142,8 @@ class LaneNet(nn.Module):
                     # Ensure frame is on correct device
                     if frame.device != input_tensor.device:
                         frame = frame.to(input_tensor.device)
+                    # Add coordinate channels before encoding
+                    frame = self.coord_adder(frame)  # [B, 5, H, W]
                     # Process through encoder - activations will have gradients even if encoder params don't
                     encoded = self._encoder(frame)  # [B, 128, H/8, W/8]
                     encoded_frames.append(encoded)
@@ -123,10 +160,14 @@ class LaneNet(nn.Module):
                 instance = self._decoder_instance(c)
             else:
                 # Single frame mode: normal behavior
+                # Add coordinate channels before encoding
+                input_tensor = self.coord_adder(input_tensor)
                 c = self._encoder(input_tensor)
                 binary = self._decoder_binary(c)
                 instance = self._decoder_instance(c)
         elif self._arch == 'DeepLabv3+':
+            # Add coordinate channels before encoding
+            input_tensor = self.coord_adder(input_tensor)
             c1, c2 = self._encoder(input_tensor)
             binary = self._decoder_binary(c1, c2)
             instance = self._decoder_instance(c1, c2)
