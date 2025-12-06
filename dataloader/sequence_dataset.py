@@ -208,11 +208,20 @@ class SequenceDataset(Dataset):
             # Stack frames: [T, 3, H, W] -> [T*3, H, W]
             stacked = torch.cat(frames, dim=0)
             
-            # Ensure mask is in correct format and float
+            # Ensure mask is in correct format and binarize to [0, 1]
             if mask_tensor.dim() == 2:
                 mask_tensor = mask_tensor.unsqueeze(0)  # [1, H, W]
             if not mask_tensor.is_floating_point():
                 mask_tensor = mask_tensor.float()
+            
+            # CRÍTICO: Binarizar máscara a 0 o 1 (no 0 o 255)
+            # Si viene de Albumentations con valores 0-255, normalizar y binarizar
+            # Usar item() para obtener el valor escalar del tensor
+            mask_max = mask_tensor.max().item() if isinstance(mask_tensor, torch.Tensor) else float(mask_tensor.max())
+            if mask_max > 1.0:
+                mask_tensor = mask_tensor / 255.0
+            # Binarizar: valores > 0.5 -> 1, else -> 0
+            mask_tensor = (mask_tensor > 0.5).float()
             
             return stacked, mask_tensor
         else:

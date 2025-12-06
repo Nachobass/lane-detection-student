@@ -172,6 +172,7 @@ def train_temporal_model(
         'epoch': [],
         'phase': [],
         'training_loss': [],
+        'train_iou': [],
         'val_loss': [],
         'val_iou': []
     }
@@ -179,6 +180,71 @@ def train_temporal_model(
     best_model_wts = copy.deepcopy(model.state_dict())
     
     os.makedirs(save_dir, exist_ok=True)
+    
+    # ============================================================
+    # EVALUACIÓN INICIAL: IoU antes de entrenar (modelo pre-entrenado)
+    # ============================================================
+    print("\n" + "="*60)
+    print("EVALUACIÓN INICIAL: IoU con modelo pre-entrenado")
+    print("="*60)
+    
+    model.eval()
+    train_iou_initial = 0.0
+    val_iou_initial = 0.0
+    
+    with torch.no_grad():
+        # Evaluar en train
+        for images, masks in train_loader:
+            if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
+                images = reshape_sequence_input(images, model.sequence_length)
+            
+            images = images.to(device)
+            masks = masks.to(device)
+            
+            # Binarizar máscaras
+            if masks.dim() == 4:
+                masks_squeezed = masks.squeeze(1)
+            else:
+                masks_squeezed = masks
+            
+            if masks_squeezed.max() > 1.0:
+                masks_squeezed = masks_squeezed / 255.0
+            masks_squeezed = (masks_squeezed > 0.5).float()
+            binary_masks = masks_squeezed.long()
+            
+            outputs = model(images)
+            iou = compute_iou(outputs['binary_seg_logits'], binary_masks)
+            train_iou_initial += iou * images.size(0)
+        
+        # Evaluar en val
+        for images, masks in val_loader:
+            if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
+                images = reshape_sequence_input(images, model.sequence_length)
+            
+            images = images.to(device)
+            masks = masks.to(device)
+            
+            # Binarizar máscaras
+            if masks.dim() == 4:
+                masks_squeezed = masks.squeeze(1)
+            else:
+                masks_squeezed = masks
+            
+            if masks_squeezed.max() > 1.0:
+                masks_squeezed = masks_squeezed / 255.0
+            masks_squeezed = (masks_squeezed > 0.5).float()
+            binary_masks = masks_squeezed.long()
+            
+            outputs = model(images)
+            iou = compute_iou(outputs['binary_seg_logits'], binary_masks)
+            val_iou_initial += iou * images.size(0)
+    
+    train_iou_initial = train_iou_initial / len(train_loader.dataset)
+    val_iou_initial = val_iou_initial / len(val_loader.dataset)
+    
+    print(f'Train IoU (inicial): {train_iou_initial:.4f} ({train_iou_initial*100:.2f}%)')
+    print(f'Val IoU (inicial): {val_iou_initial:.4f} ({val_iou_initial*100:.2f}%)')
+    print("="*60 + "\n")
     
     # ============================================================
     # PHASE 1: Train only ConvLSTM (encoder frozen)
@@ -221,6 +287,7 @@ def train_temporal_model(
             running_loss_b = 0.0
             running_loss_i = 0.0
             running_binary_loss_raw = 0.0
+            running_train_iou = 0.0
             
             for batch_idx, (images, masks) in enumerate(train_loader):
                 # Ensure images are float type
@@ -235,13 +302,6 @@ def train_temporal_model(
                 images = images.to(device)
                 masks = masks.to(device)
                 
-                # Debug: Verify input shape (only first batch of first epoch)
-                if epoch == 0 and batch_idx == 0:
-                    print(f"Debug - Input shape: {images.shape}, Expected: [B, {model.sequence_length}, 3, H, W]")
-                    print(f"Debug - Mask shape: {masks.shape}")
-                    print(f"Debug - Mask min: {masks.min().item()}, max: {masks.max().item()}, dtype: {masks.dtype}")
-                    print(f"Debug - Mask unique values: {torch.unique(masks)}")
-                
                 # Handle mask shape: [B, 1, H, W] or [B, H, W]
                 # CRÍTICO: Asegurar que las máscaras estén binarizadas a 0 o 1 antes de convertir a long
                 if masks.dim() == 4:
@@ -249,10 +309,23 @@ def train_temporal_model(
                 else:
                     masks_squeezed = masks
                 
+                # Debug: Verify input shape (only first batch of first epoch) - ANTES de binarizar
+                if epoch == 0 and batch_idx == 0:
+                    print(f"Debug - Input shape: {images.shape}, Expected: [B, {model.sequence_length}, 3, H, W]")
+                    print(f"Debug - Mask shape (raw): {masks.shape}")
+                    print(f"Debug - Mask min (raw): {masks.min().item()}, max (raw): {masks.max().item()}, dtype: {masks.dtype}")
+                    print(f"Debug - Mask unique values (raw): {torch.unique(masks)}")
+                
                 # Binarizar si es necesario (valores deberían ser 0 o 1, no 0 o 255)
                 if masks_squeezed.max() > 1.0:
                     masks_squeezed = masks_squeezed / 255.0
                 masks_squeezed = (masks_squeezed > 0.5).float()
+                
+                # Debug: After binarization
+                if epoch == 0 and batch_idx == 0:
+                    print(f"Debug - Mask shape (after binarization): {masks_squeezed.shape}")
+                    print(f"Debug - Mask min (after): {masks_squeezed.min().item()}, max (after): {masks_squeezed.max().item()}")
+                    print(f"Debug - Mask unique values (after): {torch.unique(masks_squeezed)}")
                 
                 # Convertir a long para loss (debe ser 0 o 1)
                 binary_masks = masks_squeezed.long()  # [B, H, W]
@@ -305,16 +378,17 @@ def train_temporal_model(
                 running_loss += total_loss.item() * images.size(0)
                 running_loss_b += binary_loss.item() * images.size(0)
                 running_loss_i += instance_loss.item() * images.size(0)
-                # Also track raw binary loss for display
-                if epoch == 0 and batch_idx == 0:
-                    running_binary_loss_raw = binary_loss_raw.item() * images.size(0)
-                else:
-                    running_binary_loss_raw += binary_loss_raw.item() * images.size(0)
+                running_binary_loss_raw += binary_loss_raw.item() * images.size(0)
+                
+                # Calculate train IoU
+                train_iou_batch = compute_iou(outputs['binary_seg_logits'], binary_masks)
+                running_train_iou += train_iou_batch * images.size(0)
             
             epoch_loss = running_loss / len(train_loader.dataset)
             binary_loss = running_loss_b / len(train_loader.dataset)
             instance_loss = running_loss_i / len(train_loader.dataset)
             binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
+            train_iou_avg = running_train_iou / len(train_loader.dataset)
             
             # Validation
             model.eval()
@@ -358,9 +432,11 @@ def train_temporal_model(
             
             # Show weighted and unweighted losses for better understanding
             print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_raw_avg:.4f}], Instance: {instance_loss:.4f})')
+            print(f'Train IoU: {train_iou_avg:.4f} ({train_iou_avg*100:.2f}%)')
             print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%)')
             
             training_log['training_loss'].append(epoch_loss)
+            training_log['train_iou'].append(train_iou_avg)
             training_log['val_loss'].append(val_loss)
             training_log['val_iou'].append(val_iou)
             
@@ -416,6 +492,7 @@ def train_temporal_model(
         running_loss_b = 0.0
         running_loss_i = 0.0
         running_binary_loss_raw = 0.0
+        running_train_iou = 0.0
         
         for batch_idx, (images, masks) in enumerate(train_loader):
             if images.dim() == 4 and images.shape[1] == model.sequence_length * 3:
@@ -451,11 +528,16 @@ def train_temporal_model(
             running_loss_b += binary_loss.item() * images.size(0)
             running_loss_i += instance_loss.item() * images.size(0)
             running_binary_loss_raw += binary_loss_raw.item() * images.size(0)
+            
+            # Calculate train IoU
+            train_iou_batch = compute_iou(outputs['binary_seg_logits'], binary_masks)
+            running_train_iou += train_iou_batch * images.size(0)
         
         epoch_loss = running_loss / len(train_loader.dataset)
         binary_loss = running_loss_b / len(train_loader.dataset)
         instance_loss = running_loss_i / len(train_loader.dataset)
         binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
+        train_iou_avg = running_train_iou / len(train_loader.dataset)
         
         # Validation
         model.eval()
@@ -498,9 +580,11 @@ def train_temporal_model(
         # Show weighted and unweighted losses for better understanding
         binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
         print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_raw_avg:.4f}], Instance: {instance_loss:.4f})')
+        print(f'Train IoU: {train_iou_avg:.4f} ({train_iou_avg*100:.2f}%)')
         print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%)')
         
         training_log['training_loss'].append(epoch_loss)
+        training_log['train_iou'].append(train_iou_avg)
         training_log['val_loss'].append(val_loss)
         training_log['val_iou'].append(val_iou)
         
@@ -746,12 +830,13 @@ if __name__ == '__main__':
         'epoch': log['epoch'],
         'phase': log['phase'],
         'training_loss': log['training_loss'],
+        'train_iou': log.get('train_iou', [0] * len(log['epoch'])),
         'val_loss': log['val_loss'],
         'val_iou': log.get('val_iou', [0] * len(log['epoch']))
     })
     
     train_log_save_filename = os.path.join(save_path, 'training_log.csv')
-    df.to_csv(train_log_save_filename, columns=['epoch','phase','training_loss','val_loss','val_iou'], header=True,index=False,encoding='utf-8')
+    df.to_csv(train_log_save_filename, columns=['epoch','phase','training_loss','train_iou','val_loss','val_iou'], header=True,index=False,encoding='utf-8')
     print("training log is saved: {}".format(train_log_save_filename))
     
     model_save_filename = os.path.join(save_path, 'best_model.pth')
