@@ -30,12 +30,12 @@ class LaneNet(nn.Module):
         self._arch = arch
         
         # Initialize CoordinateConv module to add coordinate channels
-        self.coord_adder = AddCoordinateChannels(with_r=False)
-        self.coord_adder.to(DEVICE)
+        # self.coord_adder = AddCoordinateChannels(with_r=False)
+        # self.coord_adder.to(DEVICE)
         print("CoordinateConv enabled: adding X, Y coordinate channels to input")
         
         # Calculate encoder input channels: original channels + 2 coordinate channels
-        encoder_in_ch = in_ch + 2
+        encoder_in_ch = in_ch #+ 2
         
         if self._arch == 'UNet':
             self._encoder = UNet_Encoder(encoder_in_ch)
@@ -110,7 +110,7 @@ class LaneNet(nn.Module):
     def forward(self, input_tensor):
         if self._arch == 'UNet':
             # Add coordinate channels before encoding
-            input_tensor = self.coord_adder(input_tensor)
+            # input_tensor = self.coord_adder(input_tensor)
             c1, c2, c3, c4, c5 = self._encoder(input_tensor)
             binary = self._decoder_binary(c1, c2, c3, c4, c5)
             instance = self._decoder_instance(c1, c2, c3, c4, c5)
@@ -143,7 +143,7 @@ class LaneNet(nn.Module):
                     if frame.device != input_tensor.device:
                         frame = frame.to(input_tensor.device)
                     # Add coordinate channels before encoding
-                    frame = self.coord_adder(frame)  # [B, 5, H, W]
+                    # frame = self.coord_adder(frame)  # [B, 5, H, W]
                     # Process through encoder - activations will have gradients even if encoder params don't
                     encoded = self._encoder(frame)  # [B, 128, H/8, W/8]
                     encoded_frames.append(encoded)
@@ -161,13 +161,13 @@ class LaneNet(nn.Module):
             else:
                 # Single frame mode: normal behavior
                 # Add coordinate channels before encoding
-                input_tensor = self.coord_adder(input_tensor)
+                # input_tensor = self.coord_adder(input_tensor)
                 c = self._encoder(input_tensor)
                 binary = self._decoder_binary(c)
                 instance = self._decoder_instance(c)
         elif self._arch == 'DeepLabv3+':
             # Add coordinate channels before encoding
-            input_tensor = self.coord_adder(input_tensor)
+            # input_tensor = self.coord_adder(input_tensor)
             c1, c2 = self._encoder(input_tensor)
             binary = self._decoder_binary(c1, c2)
             instance = self._decoder_instance(c1, c2)
