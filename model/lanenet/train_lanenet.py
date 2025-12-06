@@ -75,7 +75,7 @@ def compute_iou(pred, target):
     
     Args:
         pred: Predictions (logits or probabilities)
-        target: Ground truth masks
+        target: Ground truth masks (long tensor with values 0 or 1, or float with values 0.0-1.0)
     
     Returns:
         IoU score
@@ -89,10 +89,17 @@ def compute_iou(pred, target):
     else:
         pred_binary = (pred > 0.5).float()
     
-    if target.dim() > 2:
-        target_binary = (target > 0.5).float()
+    # Convert target to float binary (0.0 or 1.0)
+    # Target can be long (0 or 1) or float (0.0-1.0)
+    if target.dtype == torch.long:
+        target_binary = target.float()
     else:
+        # If float, binarize
         target_binary = (target > 0.5).float()
+    
+    # Ensure same shape
+    if target_binary.dim() > 2:
+        target_binary = target_binary.squeeze(1) if target_binary.shape[1] == 1 else target_binary
     
     # Flatten for batch computation
     pred_flat = pred_binary.view(pred_binary.size(0), -1)
@@ -232,12 +239,23 @@ def train_temporal_model(
                 if epoch == 0 and batch_idx == 0:
                     print(f"Debug - Input shape: {images.shape}, Expected: [B, {model.sequence_length}, 3, H, W]")
                     print(f"Debug - Mask shape: {masks.shape}")
+                    print(f"Debug - Mask min: {masks.min().item()}, max: {masks.max().item()}, dtype: {masks.dtype}")
+                    print(f"Debug - Mask unique values: {torch.unique(masks)}")
                 
                 # Handle mask shape: [B, 1, H, W] or [B, H, W]
+                # CRÍTICO: Asegurar que las máscaras estén binarizadas a 0 o 1 antes de convertir a long
                 if masks.dim() == 4:
-                    binary_masks = masks.squeeze(1).long()  # [B, H, W]
+                    masks_squeezed = masks.squeeze(1)  # [B, H, W]
                 else:
-                    binary_masks = masks.long()
+                    masks_squeezed = masks
+                
+                # Binarizar si es necesario (valores deberían ser 0 o 1, no 0 o 255)
+                if masks_squeezed.max() > 1.0:
+                    masks_squeezed = masks_squeezed / 255.0
+                masks_squeezed = (masks_squeezed > 0.5).float()
+                
+                # Convertir a long para loss (debe ser 0 o 1)
+                binary_masks = masks_squeezed.long()  # [B, H, W]
                 
                 # Create instance mask (same as binary for now)
                 instance_masks = masks.float()
@@ -311,10 +329,18 @@ def train_temporal_model(
                     images = images.to(device)
                     masks = masks.to(device)
                     
+                    # CRÍTICO: Binarizar máscaras de validación igual que en entrenamiento
                     if masks.dim() == 4:
-                        binary_masks = masks.squeeze(1).long()
+                        masks_squeezed = masks.squeeze(1)
                     else:
-                        binary_masks = masks.long()
+                        masks_squeezed = masks
+                    
+                    # Binarizar si es necesario
+                    if masks_squeezed.max() > 1.0:
+                        masks_squeezed = masks_squeezed / 255.0
+                    masks_squeezed = (masks_squeezed > 0.5).float()
+                    
+                    binary_masks = masks_squeezed.long()
                     
                     instance_masks = masks.float()
                     
@@ -398,12 +424,19 @@ def train_temporal_model(
             images = images.to(device)
             masks = masks.to(device)
             
+            # CRÍTICO: Binarizar máscaras igual que en Phase 1
             if masks.dim() == 4:
-                binary_masks = masks.squeeze(1).long()
+                masks_squeezed = masks.squeeze(1)
             else:
-                binary_masks = masks.long()
+                masks_squeezed = masks
             
-            instance_masks = masks.float()
+            # Binarizar si es necesario
+            if masks_squeezed.max() > 1.0:
+                masks_squeezed = masks_squeezed / 255.0
+            masks_squeezed = (masks_squeezed > 0.5).float()
+            
+            binary_masks = masks_squeezed.long()
+            instance_masks = masks_squeezed.float()
             
             optimizer.zero_grad()
             
@@ -437,12 +470,19 @@ def train_temporal_model(
                 images = images.to(device)
                 masks = masks.to(device)
                 
+                # CRÍTICO: Binarizar máscaras de validación igual que en entrenamiento
                 if masks.dim() == 4:
-                    binary_masks = masks.squeeze(1).long()
+                    masks_squeezed = masks.squeeze(1)
                 else:
-                    binary_masks = masks.long()
+                    masks_squeezed = masks
                 
-                instance_masks = masks.float()
+                # Binarizar si es necesario
+                if masks_squeezed.max() > 1.0:
+                    masks_squeezed = masks_squeezed / 255.0
+                masks_squeezed = (masks_squeezed > 0.5).float()
+                
+                binary_masks = masks_squeezed.long()
+                instance_masks = masks_squeezed.float()
                 
                 outputs = model(images)
                 loss = compute_loss(outputs, binary_masks, instance_masks, loss_type)

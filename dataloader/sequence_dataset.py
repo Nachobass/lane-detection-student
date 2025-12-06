@@ -237,4 +237,8 @@ class SequenceDataset(Dataset):
             mask = mask.resize(self.size)
             mask = TF.to_tensor(mask)
             
+            # CRÍTICO: Binarizar máscara a 0 o 1
+            # TF.to_tensor normaliza a [0, 1], pero necesitamos binarizar explícitamente
+            mask = (mask > 0.5).float()
+            
             return stacked, mask
