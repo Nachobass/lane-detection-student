@@ -197,10 +197,13 @@ class SequenceDataset(Dataset):
             # Extract mask
             mask_tensor = augmented['mask']
             
-            # Ensure all frames are float tensors
+            # Ensure all frames are float tensors and normalize to [0, 1]
             for i in range(len(frames)):
                 if not frames[i].is_floating_point():
-                    frames[i] = frames[i].float()
+                    frames[i] = frames[i].float() / 255.0  # CRÍTICO: Normalizar a [0, 1]
+                elif frames[i].max() > 1.0:
+                    # If already float but values are in [0, 255], normalize
+                    frames[i] = frames[i] / 255.0
             
             # Stack frames: [T, 3, H, W] -> [T*3, H, W]
             stacked = torch.cat(frames, dim=0)
@@ -216,9 +219,16 @@ class SequenceDataset(Dataset):
             # Basic transforms without augmentation
             # Stack frames
             if isinstance(frames[0], torch.Tensor):
+                # Ensure frames are normalized to [0, 1]
+                for i in range(len(frames)):
+                    if not frames[i].is_floating_point():
+                        frames[i] = frames[i].float() / 255.0  # CRÍTICO: Normalizar a [0, 1]
+                    elif frames[i].max() > 1.0:
+                        frames[i] = frames[i] / 255.0
                 stacked = torch.cat(frames, dim=0)  # [T*3, H, W]
             else:
                 # Convert PIL to tensor and stack
+                # TF.to_tensor already normalizes to [0, 1], so this is fine
                 tensor_frames = [TF.to_tensor(f) for f in frames]
                 stacked = torch.cat(tensor_frames, dim=0)
             

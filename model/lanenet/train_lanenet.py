@@ -672,6 +672,16 @@ if __name__ == '__main__':
     model = LaneNet(arch=args.model_type, use_temporal=True, sequence_length=args.sequence_length)
     model.to(DEVICE)
     
+    # Load pre-trained weights if provided
+    if args.pretrained and os.path.exists(args.pretrained):
+        print(f"Cargando pesos pre-entrenados desde: {args.pretrained}")
+        try:
+            model.load_state_dict(torch.load(args.pretrained, map_location=DEVICE), strict=False)
+            print("Pesos pre-entrenados cargados exitosamente")
+        except Exception as e:
+            print(f"Advertencia: Error al cargar pesos pre-entrenados: {e}")
+            print("Continuando sin pesos pre-entrenados...")
+    
     print(f"Temporal training enabled with sequence length: {args.sequence_length}")
     print(f"Phase 1: {args.num_epochs_phase1} epochs, Phase 2: {args.num_epochs_phase2} epochs")
     print(f"{len(train_dataset)} training samples\n")
