@@ -39,15 +39,24 @@ class SequenceDataset(Dataset):
         self.use_augmentation = use_augmentation and ALBUMENTATIONS_AVAILABLE
         self.strong_augmentation = strong_augmentation
         
-        # Setup transforms
+        # Setup transforms with sequence_length support
         if self.use_augmentation:
             if strong_augmentation:
                 from model.lanenet.dataset.augmentations import get_strong_augmentations
-                self.transform = get_strong_augmentations(image_size=(target_size[1], target_size[0]))
+                self.transform = get_strong_augmentations(
+                    image_size=(target_size[1], target_size[0]),
+                    sequence_length=sequence_len
+                )
             else:
-                self.transform = get_training_augmentations(image_size=(target_size[1], target_size[0]))
+                self.transform = get_training_augmentations(
+                    image_size=(target_size[1], target_size[0]),
+                    sequence_length=sequence_len
+                )
         else:
-            self.transform = get_validation_transform(image_size=(target_size[1], target_size[0])) if ALBUMENTATIONS_AVAILABLE else None
+            self.transform = get_validation_transform(
+                image_size=(target_size[1], target_size[0]),
+                sequence_length=sequence_len
+            ) if ALBUMENTATIONS_AVAILABLE else None
         
         if self.use_augmentation:
             print(f"Using {'strong' if strong_augmentation else 'standard'} Albumentations augmentations")
@@ -111,26 +120,38 @@ class SequenceDataset(Dataset):
         
         # Load mask
         if self.use_augmentation and self.transform is not None:
-            # Apply augmentation to all frames and mask together
-            # Strategy: Apply same geometric transforms to all frames for temporal consistency
-            # but allow slight variations in non-geometric transforms (brightness, blur)
+            # Apply augmentation to ALL frames simultaneously using additional_targets
+            # This ensures the same geometric transformation (rotation, perspective, etc.)
+            # is applied to all frames, preserving temporal consistency
             
             # Load mask
             mask = self.load_mask_numpy(self.mask_paths[idx])
             
-            # Apply augmentation to the last frame (which corresponds to the mask)
-            augmented = self.transform(image=frames[-1], mask=mask)
-            frames[-1] = augmented["image"]
-            mask_tensor = augmented["mask"]
+            # Prepare input dictionary for Albumentations with additional_targets
+            # Format: {'image': current_frame, 'image0': frame_t-2, 'image1': frame_t-1, 'mask': mask}
+            transform_input = {
+                'image': frames[-1],  # Current frame (t)
+                'mask': mask
+            }
             
-            # Apply augmentation to previous frames
-            # Note: Each call to transform() uses different random parameters
-            # For temporal sequences, we want geometric consistency but can allow
-            # illumination/blur variations (which naturally occur in video)
+            # Add previous frames as additional targets
+            # For sequence_length=3: frames[-1] is t, frames[-2] is t-1, frames[-3] is t-2
+            # We map: image0 -> t-2, image1 -> t-1 (if sequence_length=3)
             for i in range(len(frames) - 1):
-                # Don't pass mask parameter when there's no mask
-                augmented_frame = self.transform(image=frames[i])
-                frames[i] = augmented_frame["image"]
+                transform_input[f'image{i}'] = frames[i]
+            
+            # Apply transformation to all frames simultaneously
+            # Geometric transforms (ShiftScaleRotate, Perspective) will be applied
+            # identically to all frames via additional_targets
+            augmented = self.transform(**transform_input)
+            
+            # Extract augmented frames
+            frames[-1] = augmented['image']  # Current frame
+            for i in range(len(frames) - 1):
+                frames[i] = augmented[f'image{i}']  # Previous frames
+            
+            # Extract mask
+            mask_tensor = augmented['mask']
             
             # Ensure all frames are float tensors
             for i in range(len(frames)):
