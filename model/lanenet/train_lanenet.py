@@ -38,8 +38,7 @@ def compute_loss(net_output, binary_label, instance_label, loss_type='FocalLoss'
     #   - Higher values (10-20) force model to focus more on detecting lane pixels
     #   - Current: 10 (already quite high)
     #   - If model struggles with lane detection, try increasing to 15-20
-    # k_binary = 20  # Try 15-20 if lanes are not being detected well
-    k_binary = 15
+    k_binary = 20  # Try 15-20 if lanes are not being detected well
     
     # k_instance: Weight for instance segmentation loss (separating different lanes)
     #   - Lower values (0.3-0.5) are typical
@@ -137,8 +136,7 @@ def train_temporal_model(
     freeze_encoder=True,
     save_dir='./log',
     lr_phase1=1e-3,
-    lr_phase2=1e-4,
-    pretrained_path=None
+    lr_phase2=1e-4
 ):
     """
     Train LaneNet with temporal support in two phases
@@ -158,7 +156,6 @@ def train_temporal_model(
         save_dir: Directory to save checkpoints
         lr_phase1: Learning rate for phase 1
         lr_phase2: Learning rate for phase 2
-        pretrained_path: Path to pretrained model checkpoint (optional)
     
     Returns:
         Tuple of (trained_model, training_log)
@@ -176,29 +173,10 @@ def train_temporal_model(
     
     os.makedirs(save_dir, exist_ok=True)
     
-    # Load pretrained model if provided
-    if pretrained_path and os.path.exists(pretrained_path):
-        print(f"\nLoading pretrained model from: {pretrained_path}")
-        try:
-            checkpoint = torch.load(pretrained_path, map_location=device)
-            model.load_state_dict(checkpoint)
-            best_model_wts = copy.deepcopy(model.state_dict())
-            print("Pretrained model loaded successfully!")
-            
-            # If loading from a checkpoint, you might want to skip phase 1
-            # This is handled by setting num_epochs_phase1=0 if needed
-        except Exception as e:
-            print(f"Warning: Could not load pretrained model: {e}")
-            print("Starting training from scratch...")
-    elif pretrained_path:
-        print(f"Warning: Pretrained model path not found: {pretrained_path}")
-        print("Starting training from scratch...")
-    
     # ============================================================
     # PHASE 1: Train only ConvLSTM (encoder frozen)
     # ============================================================
-    checkpoint_path = None  # Initialize to avoid UnboundLocalError
-    if freeze_encoder and num_epochs_phase1 > 0:
+    if freeze_encoder:
         print("\n" + "="*60)
         print("PHASE 1: Training ConvLSTM with frozen encoder")
         print("="*60)
@@ -370,13 +348,7 @@ def train_temporal_model(
             torch.save(model.state_dict(), checkpoint_path)
         
         print(f"\nPhase 1 complete. Best val loss: {best_loss:.4f}")
-        if checkpoint_path:
-            print(f"Checkpoint saved: {checkpoint_path}")
-    elif num_epochs_phase1 == 0:
-        print("\n" + "="*60)
-        print("PHASE 1: Skipped (num_epochs_phase1=0)")
-        print("="*60)
-        print("Proceeding directly to Phase 2...")
+        print(f"Checkpoint saved: {checkpoint_path}")
     
     # ============================================================
     # PHASE 2: Fine-tune entire network
@@ -399,19 +371,11 @@ def train_temporal_model(
     # Create new optimizer with all parameters
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.Adam(trainable_params, lr=lr_phase2)
-    
-    # Add learning rate scheduler for phase 2 (reduce LR when plateau)
-    scheduler = lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-6
-    )
-    
     print(f"Training {sum(p.numel() for p in trainable_params)} parameters")
-    print(f"Using ReduceLROnPlateau scheduler (factor=0.5, patience=3)")
     
     # Load best model from phase 1
     model.load_state_dict(best_model_wts)
     best_loss = float("inf")
-    best_iou = 0.0  # Track best IoU for early stopping
     
     # Training loop Phase 2
     for epoch in range(num_epochs_phase2):
@@ -491,29 +455,19 @@ def train_temporal_model(
         val_loss = val_loss / len(val_loader.dataset)
         val_iou = val_iou / len(val_loader.dataset)
         
-        # Update learning rate scheduler
-        old_lr = optimizer.param_groups[0]['lr']
-        scheduler.step(val_loss)
-        new_lr = optimizer.param_groups[0]['lr']
-        if new_lr < old_lr:
-            print(f'  -> Learning rate reduced: {old_lr:.6f} -> {new_lr:.6f}')
-        
         # Show weighted and unweighted losses for better understanding
         binary_loss_raw_avg = running_binary_loss_raw / len(train_loader.dataset)
-        current_lr = optimizer.param_groups[0]['lr']
         print(f'Train Loss: {epoch_loss:.4f} (Binary: {binary_loss:.4f} [raw: {binary_loss_raw_avg:.4f}], Instance: {instance_loss:.4f})')
-        print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%), LR: {current_lr:.6f}')
+        print(f'Val Loss: {val_loss:.4f}, Val IoU: {val_iou:.4f} ({val_iou*100:.2f}%)')
         
         training_log['training_loss'].append(epoch_loss)
         training_log['val_loss'].append(val_loss)
         training_log['val_iou'].append(val_iou)
         
-        # Save checkpoint based on IoU (better metric than loss for segmentation)
-        if val_iou > best_iou:
-            best_iou = val_iou
+        # Save checkpoint
+        if val_loss < best_loss:
             best_loss = val_loss
             best_model_wts = copy.deepcopy(model.state_dict())
-            print(f'  -> New best IoU: {best_iou:.4f} ({best_iou*100:.2f}%)')
         
         # Save periodic checkpoints
         if (epoch + 1) % 5 == 0 or epoch == num_epochs_phase2 - 1:
@@ -720,10 +674,6 @@ if __name__ == '__main__':
     
     print(f"Temporal training enabled with sequence length: {args.sequence_length}")
     print(f"Phase 1: {args.num_epochs_phase1} epochs, Phase 2: {args.num_epochs_phase2} epochs")
-    if args.pretrained:
-        print(f"Will load pretrained model from: {args.pretrained}")
-        if args.num_epochs_phase1 == 0:
-            print("Note: Phase 1 skipped (num_epochs_phase1=0), will only fine-tune in Phase 2")
     print(f"{len(train_dataset)} training samples\n")
     
     # Use temporal training function
@@ -738,8 +688,7 @@ if __name__ == '__main__':
         freeze_encoder=args.freeze_encoder,
         save_dir=save_path,
         lr_phase1=args.lr,
-        lr_phase2=args.lr * 0.1,  # Lower learning rate for phase 2
-        pretrained_path=args.pretrained
+        lr_phase2=args.lr * 0.1  # Lower learning rate for phase 2
     )
     
     # Create DataFrame with temporal training log
