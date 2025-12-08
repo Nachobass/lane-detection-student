@@ -1,9 +1,3 @@
-# coding: utf-8
-"""
-This is the implementation of following paper:
-https://arxiv.org/pdf/1802.05591.pdf
-"""
-
 from torch.nn.modules.loss import _Loss
 from torch.autograd import Variable
 import torch

@@ -129,3 +129,7 @@ dmypy.json
 .pyre/
 
 data/archive2/
+data/culane/
+
+# Archivos de macOS
+.DS_Store

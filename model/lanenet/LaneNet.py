@@ -1,8 +1,3 @@
-# coding: utf-8
-"""
-LaneNet model
-https://arxiv.org/pdf/1807.01726.pdf
-"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

@@ -1,9 +1,3 @@
-# coding: utf-8
-'''
-Code is referred from https://github.com/klintan/pytorch-lanenet
-delete the one-hot representation for instance output
-'''
-
 import os
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -52,17 +46,96 @@ class TusimpleSet(Dataset):
                == len(self._gt_img_list)
 
         # load all
-
-        img = Image.open(self._gt_img_list[idx])
+        # Handle truncated/corrupted images
+        img = None
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                img = Image.open(self._gt_img_list[idx])
+                # Verify image is not truncated
+                img.load()
+                break
+            except (OSError, IOError) as e:
+                if attempt < max_retries - 1:
+                    # Try to reload
+                    continue
+                else:
+                    # If still fails, try to load with cv2 as fallback
+                    print(f"Warning: Could not load image {self._gt_img_list[idx]} with PIL, trying cv2...")
+                    cv_img = cv2.imread(self._gt_img_list[idx], cv2.IMREAD_COLOR)
+                    if cv_img is not None:
+                        img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
+                    else:
+                        # Image is completely corrupted, delete it and create empty image
+                        print(f"Error: Image {self._gt_img_list[idx]} is corrupted. Deleting and using empty image.")
+                        try:
+                            os.remove(self._gt_img_list[idx])
+                            # Also delete corresponding masks
+                            if idx < len(self._gt_label_binary_list):
+                                if os.path.exists(self._gt_label_binary_list[idx]):
+                                    os.remove(self._gt_label_binary_list[idx])
+                            if idx < len(self._gt_label_instance_list):
+                                if os.path.exists(self._gt_label_instance_list[idx]):
+                                    os.remove(self._gt_label_instance_list[idx])
+                        except Exception as del_err:
+                            print(f"Warning: Could not delete corrupted file: {del_err}")
+                        
+                        # Create empty image (default size 1640x590 for CULane, or use a sample)
+                        # Try to get size from a valid image
+                        default_size = (1640, 590)  # Common CULane size
+                        if idx > 0:
+                            try:
+                                sample_img = Image.open(self._gt_img_list[0])
+                                default_size = sample_img.size
+                                sample_img.close()
+                            except:
+                                pass
+                        img = Image.new('RGB', default_size, color=(0, 0, 0))
+        
         label_instance_img = cv2.imread(self._gt_label_instance_list[idx], cv2.IMREAD_UNCHANGED)
         label_img = cv2.imread(self._gt_label_binary_list[idx], cv2.IMREAD_COLOR)
+        
+        # Handle missing or corrupted mask files
+        if label_img is None:
+            print(f"Warning: Could not load binary mask {self._gt_label_binary_list[idx]}, creating empty mask")
+            # Create empty mask with same size as image
+            img_array = np.array(img)
+            if len(img_array.shape) == 3:
+                h, w = img_array.shape[:2]
+            else:
+                h, w = img_array.shape
+            label_img = np.zeros((h, w, 3), dtype=np.uint8)
+        
+        if label_instance_img is None:
+            print(f"Warning: Could not load instance mask {self._gt_label_instance_list[idx]}, creating empty mask")
+            # Create empty mask with same size as binary mask
+            if label_img is not None:
+                h, w = label_img.shape[:2]
+            else:
+                img_array = np.array(img)
+                if len(img_array.shape) == 3:
+                    h, w = img_array.shape[:2]
+                else:
+                    h, w = img_array.shape
+            label_instance_img = np.zeros((h, w), dtype=np.uint8)
 
         # optional transformations
         if self.transform:
             img = self.transform(img)
         if self.target_transform:
-            label_img = self.target_transform(label_img)
-            label_instance_img = self.target_transform(label_instance_img)
+            if label_img is not None and label_img.size > 0:
+                label_img = self.target_transform(label_img)
+            else:
+                # Create empty mask with target size
+                label_img = np.zeros((256, 512, 3), dtype=np.uint8)
+                label_img = self.target_transform(label_img)
+            
+            if label_instance_img is not None and label_instance_img.size > 0:
+                label_instance_img = self.target_transform(label_instance_img)
+            else:
+                # Create empty mask with target size
+                label_instance_img = np.zeros((256, 512), dtype=np.uint8)
+                label_instance_img = self.target_transform(label_instance_img)
 
         label_binary = np.zeros([label_img.shape[0], label_img.shape[1]], dtype=np.uint8)
         mask = np.where((label_img[:, :, :] != [0, 0, 0]).all(axis=2))

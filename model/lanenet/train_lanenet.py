@@ -1,4 +1,3 @@
-# coding: utf-8
 """
 Training function for LaneNet with temporal ConvLSTM support
 Supports two-phase training: Phase 1 (frozen encoder) and Phase 2 (full fine-tuning)
@@ -33,12 +32,8 @@ def compute_loss(net_output, binary_label, instance_label, loss_type='FocalLoss'
     Returns:
         Tuple of (total_loss, binary_loss, instance_loss, out)
     """
-    # Loss weights - adjust these to balance binary vs instance segmentation
     # k_binary: Weight for binary segmentation loss (detecting lanes vs background)
-    #   - Higher values (10-20) force model to focus more on detecting lane pixels
-    #   - Current: 10 (already quite high)
-    #   - If model struggles with lane detection, try increasing to 15-20
-    # k_binary = 20  # Try 15-20 if lanes are not being detected well
+    # k_binary = 20  
     k_binary = 15
     
     # k_instance: Weight for instance segmentation loss (separating different lanes)
